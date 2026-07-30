@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Ход дрона — доска</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="layout">
+    <header class="toolbar">
+      <div class="toolbar-group">
+        <span class="toolbar-label">Режим</span>
+        <select id="mode-select">
+          <option value="view">Наблюдение</option>
+          <option value="correct">Коррекция позиций</option>
+          <option value="manual">Ручные ходы (отладка)</option>
+        </select>
+      </div>
+      <div class="toolbar-group">
+        <span class="toolbar-label">Наш цвет</span>
+        <select id="color-select">
+          <option value="white">Белые</option>
+          <option value="black">Чёрные</option>
+        </select>
+      </div>
+      <div class="toolbar-group status" id="connection-status">подключение…</div>
+    </header>
+
+    <main class="board-area">
+      <svg id="board" viewBox="0 0 400 400" width="640" height="640"></svg>
+    </main>
+
+    <div id="message-bar" class="message-bar" hidden></div>
+  </div>
+
+  <script src="/board.js"></script>
+</body>
+</html>

@@ -1,0 +1,105 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from state import apply_move, initial_board
+
+BINDINGS = {
+    "king": "drone-01",
+    "queen": "drone-02",
+    "bishop_1": "drone-03",
+    "bishop_2": "drone-04",
+    "knight_1": "drone-05",
+    "knight_2": "drone-06",
+    "rook_1": "rover-01",
+    "rook_2": "rover-02",
+    **{f"pawn_{i}": f"peshka-0{i}" for i in range(1, 9)},
+}
+
+
+def test_initial_board_has_32_pieces():
+    board = initial_board("white", BINDINGS)
+    assert len(board) == 32
+
+
+def test_initial_board_our_side_has_robot_ids():
+    board = initial_board("white", BINDINGS)
+    our_squares = [sq for sq, p in board.items() if p["color"] == "white"]
+    assert len(our_squares) == 16
+    for sq in our_squares:
+        assert "robot_id" in board[sq]
+
+
+def test_initial_board_their_side_has_no_robot_ids():
+    board = initial_board("white", BINDINGS)
+    their_squares = [sq for sq, p in board.items() if p["color"] == "black"]
+    assert len(their_squares) == 16
+    for sq in their_squares:
+        assert "robot_id" not in board[sq]
+
+
+def test_initial_board_king_and_queen_placement():
+    board = initial_board("white", BINDINGS)
+    assert board["e1"] == {"color": "white", "piece": "king", "robot_id": "drone-01"}
+    assert board["d1"] == {"color": "white", "piece": "queen", "robot_id": "drone-02"}
+    assert board["e8"] == {"color": "black", "piece": "king"}
+
+
+def test_initial_board_flips_for_black():
+    board = initial_board("black", BINDINGS)
+    assert board["e8"]["robot_id"] == "drone-01"
+    assert "robot_id" not in board["e1"]
+
+
+def test_view_mode_rejects_move():
+    board = initial_board("white", BINDINGS)
+    new_board, result = apply_move(board, "view", "e2", "e4")
+    assert result["ok"] is False
+    assert new_board == board
+
+
+def test_correct_mode_moves_piece():
+    board = initial_board("white", BINDINGS)
+    new_board, result = apply_move(board, "correct", "e2", "e4")
+    assert result["ok"] is True
+    assert result["captured"] is False
+    assert "e2" not in new_board
+    assert new_board["e4"]["piece"] == "pawn"
+
+
+def test_correct_mode_captures_opposite_color():
+    board = initial_board("white", BINDINGS)
+    board["e5"] = {"color": "black", "piece": "pawn"}
+    new_board, result = apply_move(board, "correct", "e2", "e5")
+    assert result["ok"] is True
+    assert result["captured"] is True
+    assert new_board["e5"]["color"] == "white"
+
+
+def test_correct_mode_rejects_same_color_target():
+    board = initial_board("white", BINDINGS)
+    new_board, result = apply_move(board, "correct", "a1", "b1")
+    assert result["ok"] is False
+    assert new_board == board
+
+
+def test_correct_mode_rejects_empty_from():
+    board = initial_board("white", BINDINGS)
+    new_board, result = apply_move(board, "correct", "e4", "e5")
+    assert result["ok"] is False
+
+
+def test_manual_mode_moves_and_reports_robot_id():
+    board = initial_board("white", BINDINGS)
+    new_board, result = apply_move(board, "manual", "e2", "e4")
+    assert result["ok"] is True
+    assert result["moved_robot_id"] == "peshka-05"
+    assert new_board["e4"]["robot_id"] == "peshka-05"
+
+
+def test_manual_mode_reports_no_robot_id_for_opponent_piece():
+    board = initial_board("white", BINDINGS)
+    new_board, result = apply_move(board, "manual", "e7", "e5")
+    assert result["ok"] is True
+    assert result["moved_robot_id"] is None

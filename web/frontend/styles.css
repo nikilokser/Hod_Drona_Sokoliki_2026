@@ -1,0 +1,150 @@
+:root {
+  --light-square: #f0d9b5;
+  --dark-square: #b58863;
+  --board-border: #3a2a1d;
+  --ours-ring: #2f7bd8;
+  --panel-bg: #1f2430;
+  --panel-fg: #e8e8ec;
+  --accent: #4a90e2;
+  --error: #e05656;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #14161c;
+  color: var(--panel-fg);
+}
+
+.layout {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 100vh;
+  padding: 24px 16px 48px;
+  gap: 24px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  align-items: center;
+  background: var(--panel-bg);
+  padding: 12px 20px;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolbar-label {
+  font-size: 0.85rem;
+  color: #9aa0ad;
+}
+
+select {
+  background: #2a2f3d;
+  color: var(--panel-fg);
+  border: 1px solid #3a4152;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 0.9rem;
+}
+
+.status {
+  font-size: 0.8rem;
+  color: #6bd08f;
+}
+
+.status.disconnected {
+  color: var(--error);
+}
+
+.board-area {
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  border: 6px solid var(--board-border);
+}
+
+#board {
+  display: block;
+  background: var(--dark-square);
+  touch-action: none;
+}
+
+.square.light {
+  fill: var(--light-square);
+}
+
+.square.dark {
+  fill: var(--dark-square);
+}
+
+.piece {
+  cursor: grab;
+  user-select: none;
+}
+
+.piece.disabled {
+  cursor: not-allowed;
+}
+
+.piece.dragging {
+  cursor: grabbing;
+}
+
+.piece-glyph {
+  font-size: 34px;
+  text-anchor: middle;
+  dominant-baseline: central;
+  paint-order: stroke;
+  stroke: #000;
+  stroke-width: 1px;
+}
+
+.piece-glyph.black-piece {
+  fill: #111;
+  stroke: #eee;
+  stroke-width: 0.6px;
+}
+
+.piece-glyph.white-piece {
+  fill: #fdfdfd;
+  stroke: #111;
+}
+
+.ours-ring {
+  fill: none;
+  stroke: var(--ours-ring);
+  stroke-width: 3px;
+  opacity: 0.85;
+}
+
+.message-bar {
+  max-width: 640px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: #2a2f3d;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.message-bar.error {
+  background: #3a2020;
+  color: #ffb4b4;
+}
+
+.message-bar.info {
+  background: #1f3a2e;
+  color: #b4ffcf;
+}
