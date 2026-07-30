@@ -3,4 +3,4 @@ sverk_ai_communication_server/
 __pycache__/
 *.pyc
 .pytest_cache/
-web/backend/.venv/
+.venv/

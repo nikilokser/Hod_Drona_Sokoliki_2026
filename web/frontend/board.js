@@ -9,13 +9,43 @@ const GLYPHS = {
   black: { king: "♚", queen: "♛", rook: "♜", bishop: "♝", knight: "♞", pawn: "♟" },
 };
 
+const ROLE_ORDER = [
+  "king", "queen", "bishop_1", "bishop_2", "knight_1", "knight_2", "rook_1", "rook_2",
+  "pawn_1", "pawn_2", "pawn_3", "pawn_4", "pawn_5", "pawn_6", "pawn_7", "pawn_8",
+];
+
+const ROLE_LABELS = {
+  king: "Король",
+  queen: "Ферзь",
+  bishop_1: "Слон (a)",
+  bishop_2: "Слон (h)",
+  knight_1: "Конь (a)",
+  knight_2: "Конь (h)",
+  rook_1: "Ладья (a)",
+  rook_2: "Ладья (h)",
+  pawn_1: "Пешка a",
+  pawn_2: "Пешка b",
+  pawn_3: "Пешка c",
+  pawn_4: "Пешка d",
+  pawn_5: "Пешка e",
+  pawn_6: "Пешка f",
+  pawn_7: "Пешка g",
+  pawn_8: "Пешка h",
+};
+
+const GATEWAY_POLL_INTERVAL_MS = 5000;
+
 const svg = document.getElementById("board");
 const modeSelect = document.getElementById("mode-select");
 const colorSelect = document.getElementById("color-select");
 const connectionStatus = document.getElementById("connection-status");
+const gatewayStatus = document.getElementById("gateway-status");
+const bindingsList = document.getElementById("bindings-list");
 const messageBar = document.getElementById("message-bar");
 
 let currentState = null;
+let latestRobots = [];
+let gatewayOk = false;
 let drag = null; // {square, group, pointerId, offsetX, offsetY}
 
 function squareToXY(square) {
@@ -75,6 +105,71 @@ function render(state) {
   for (const [square, piece] of Object.entries(state.board)) {
     svg.appendChild(renderPiece(square, piece, state));
   }
+
+  renderBindingsPanel(state);
+}
+
+function renderBindingsPanel(state) {
+  bindingsList.innerHTML = "";
+  if (!state.bindings) return;
+
+  for (const role of ROLE_ORDER) {
+    const currentRobotId = state.bindings[role];
+
+    const row = document.createElement("div");
+    row.className = "binding-row";
+
+    const label = document.createElement("span");
+    label.className = "binding-label";
+    label.textContent = ROLE_LABELS[role];
+    row.appendChild(label);
+
+    const select = document.createElement("select");
+    const seen = new Set();
+    const addOption = (robotId, online) => {
+      if (seen.has(robotId)) return;
+      seen.add(robotId);
+      const option = document.createElement("option");
+      option.value = robotId;
+      option.textContent = online === undefined ? robotId : `${robotId} ${online ? "🟢" : "⚪"}`;
+      if (robotId === currentRobotId) option.selected = true;
+      select.appendChild(option);
+    };
+
+    if (currentRobotId) addOption(currentRobotId, undefined);
+    for (const robot of latestRobots) {
+      addOption(robot.robot_id, robot.online);
+    }
+
+    select.addEventListener("change", () => apiSetBinding(role, select.value));
+    row.appendChild(select);
+    bindingsList.appendChild(row);
+  }
+}
+
+async function apiSetBinding(role, robotId) {
+  await fetch("/api/bindings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role, robot_id: robotId }),
+  });
+}
+
+async function refreshRobots() {
+  try {
+    const response = await fetch("/api/robots");
+    const body = await response.json();
+    gatewayOk = Boolean(body.ok);
+    latestRobots = body.ok ? body.robots : [];
+  } catch (err) {
+    gatewayOk = false;
+    latestRobots = [];
+  }
+
+  gatewayStatus.textContent = gatewayOk ? "Gateway: подключён" : "Gateway: недоступен";
+  gatewayStatus.classList.toggle("disconnected", !gatewayOk);
+
+  if (currentState) renderBindingsPanel(currentState);
 }
 
 function renderLabels() {
@@ -243,3 +338,5 @@ function connectWebSocket() {
 }
 
 connectWebSocket();
+refreshRobots();
+setInterval(refreshRobots, GATEWAY_POLL_INTERVAL_MS);

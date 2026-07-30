@@ -29,3 +29,16 @@ def send_fly_command(robot_id: str, to_sq: str) -> dict:
         return {"ok": True, "response": response.json()}
     except httpx.HTTPError as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def get_robots() -> dict:
+    """Fetch the robot registry from the Gateway. Also doubles as the
+    Gateway connectivity check for the UI - {"ok": False} means the
+    Gateway is unreachable, not that no robots exist."""
+
+    try:
+        response = httpx.get(f"{GATEWAY_BASE_URL}/api/v1/robots", timeout=5.0)
+        response.raise_for_status()
+        return {"ok": True, "robots": response.json()}
+    except httpx.HTTPError as exc:
+        return {"ok": False, "error": str(exc)}

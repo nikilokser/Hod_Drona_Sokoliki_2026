@@ -3,8 +3,13 @@
 Board format matches the move_validator design doc so a validator can be
 plugged in later without changing this data shape:
     board[square] = {"color": "white"|"black", "piece": "king"|"queen"|"rook"|
-                      "bishop"|"knight"|"pawn", "robot_id": "drone-01"}
-"robot_id" is present only on squares occupied by our own, bound pieces.
+                      "bishop"|"knight"|"pawn", "robot_id": "drone-01",
+                      "role": "king"}
+"robot_id" and "role" are present only on squares occupied by our own,
+bound pieces. "role" is a stable identifier for that piece instance
+("king", "bishop_1", "pawn_5", ...) that travels with the piece for the
+whole match - it is what lets bindings be edited at runtime (see
+rebind_role) even after pieces have moved off their starting squares.
 
 bindings maps a piece role ("king", "queen", "bishop_1", "bishop_2",
 "knight_1", "knight_2", "rook_1", "rook_2", "pawn_1".."pawn_8") to a
@@ -39,6 +44,10 @@ ROLE_TO_PIECE = {
     "knight_2": "knight",
 }
 
+ALL_ROLES = [role for _file_index, role in BACK_RANK] + [
+    f"pawn_{i}" for i in range(1, 9)
+]
+
 
 def _square(file_index: int, rank: int) -> str:
     return f"{FILES[file_index]}{rank}"
@@ -68,6 +77,7 @@ def initial_board(our_color: str, bindings: dict[str, str]) -> dict:
             "color": our_color,
             "piece": piece,
             "robot_id": bindings[role],
+            "role": role,
         }
         board[_square(file_index, their_back_rank)] = {
             "color": their_color,
@@ -80,6 +90,7 @@ def initial_board(our_color: str, bindings: dict[str, str]) -> dict:
             "color": our_color,
             "piece": "pawn",
             "robot_id": bindings[pawn_role],
+            "role": pawn_role,
         }
         board[_square(file_index, their_pawn_rank)] = {
             "color": their_color,
@@ -87,6 +98,20 @@ def initial_board(our_color: str, bindings: dict[str, str]) -> dict:
         }
 
     return board
+
+
+def rebind_role(board: dict, role: str, robot_id: str) -> dict:
+    """Update the robot_id of whichever square currently holds the piece
+    with this role. If that piece was captured and is no longer on the
+    board, this is a no-op on the board (the caller is still responsible
+    for updating the bindings mapping itself)."""
+
+    new_board = dict(board)
+    for square, occupant in board.items():
+        if occupant.get("role") == role:
+            new_board[square] = {**occupant, "robot_id": robot_id}
+            break
+    return new_board
 
 
 def apply_move(board: dict, mode: str, from_sq: str, to_sq: str) -> tuple[dict, dict]:

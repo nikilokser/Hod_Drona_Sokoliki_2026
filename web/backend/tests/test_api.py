@@ -13,8 +13,13 @@ from state import initial_board
 
 
 @pytest.fixture(autouse=True)
-def reset_state():
-    app_module.app_state["board"] = initial_board("white", app_module.BINDINGS)
+def reset_state(monkeypatch):
+    # Never let a test write to the real config/bindings.json.
+    monkeypatch.setattr(app_module, "save_bindings", lambda bindings: None)
+
+    fresh_bindings = dict(app_module._initial_bindings)
+    app_module.app_state["bindings"] = fresh_bindings
+    app_module.app_state["board"] = initial_board("white", fresh_bindings)
     app_module.app_state["mode"] = "view"
     app_module.app_state["our_color"] = "white"
     yield
@@ -74,3 +79,37 @@ def test_our_color_switch_resets_board(client):
     response = client.post("/api/our-color", json={"color": "black"})
     assert response.status_code == 200
     assert app_module.app_state["board"]["e8"]["robot_id"] == "drone-01"
+
+
+def test_list_robots_proxies_gateway(client):
+    fake_robots = {"ok": True, "robots": [{"robot_id": "drone-01", "online": True}]}
+    with patch("app.get_robots", return_value=fake_robots):
+        response = client.get("/api/robots")
+    assert response.status_code == 200
+    assert response.json() == fake_robots
+
+
+def test_list_robots_surfaces_gateway_error(client):
+    with patch(
+        "app.get_robots", return_value={"ok": False, "error": "connection refused"}
+    ):
+        response = client.get("/api/robots")
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
+
+
+def test_set_binding_updates_bindings_and_board(client):
+    response = client.post(
+        "/api/bindings", json={"role": "king", "robot_id": "drone-99"}
+    )
+    assert response.status_code == 200
+    assert app_module.app_state["bindings"]["king"] == "drone-99"
+    assert app_module.app_state["board"]["e1"]["robot_id"] == "drone-99"
+
+
+def test_set_binding_rejects_unknown_role(client):
+    response = client.post(
+        "/api/bindings", json={"role": "dragon", "robot_id": "drone-99"}
+    )
+    assert response.status_code == 422
+    assert "dragon" not in app_module.app_state["bindings"]

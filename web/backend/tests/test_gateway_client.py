@@ -47,3 +47,24 @@ def test_send_fly_command_http_status_error():
         result = gateway_client.send_fly_command("drone-01", "e4")
 
     assert result["ok"] is False
+
+
+def test_get_robots_success():
+    mock_response = MagicMock()
+    mock_response.raise_for_status.return_value = None
+    mock_response.json.return_value = [{"robot_id": "drone-01", "online": True}]
+
+    with patch("gateway_client.httpx.get", return_value=mock_response) as mock_get:
+        result = gateway_client.get_robots()
+
+    assert result == {"ok": True, "robots": [{"robot_id": "drone-01", "online": True}]}
+    called_url = mock_get.call_args[0][0]
+    assert called_url == f"{gateway_client.GATEWAY_BASE_URL}/api/v1/robots"
+
+
+def test_get_robots_network_error_does_not_raise():
+    with patch("gateway_client.httpx.get", side_effect=httpx.ConnectError("down")):
+        result = gateway_client.get_robots()
+
+    assert result["ok"] is False
+    assert "down" in result["error"]

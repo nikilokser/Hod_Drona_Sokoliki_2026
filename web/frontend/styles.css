@@ -139,6 +139,49 @@ select {
   opacity: 0.85;
 }
 
+.bindings-panel {
+  width: 100%;
+  max-width: 640px;
+  background: var(--panel-bg);
+  border-radius: 12px;
+  padding: 4px 20px 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.bindings-panel summary {
+  cursor: pointer;
+  padding: 10px 0;
+  font-size: 0.9rem;
+  color: #c9cede;
+  user-select: none;
+}
+
+.bindings-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px 16px;
+}
+
+.binding-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.binding-label {
+  font-size: 0.8rem;
+  color: #9aa0ad;
+  white-space: nowrap;
+}
+
+.binding-row select {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8rem;
+  padding: 4px 6px;
+}
+
 .message-bar {
   max-width: 640px;
   padding: 10px 16px;

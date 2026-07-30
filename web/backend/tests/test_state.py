@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from state import apply_move, initial_board
+from state import apply_move, initial_board, rebind_role
 
 BINDINGS = {
     "king": "drone-01",
@@ -41,9 +41,41 @@ def test_initial_board_their_side_has_no_robot_ids():
 
 def test_initial_board_king_and_queen_placement():
     board = initial_board("white", BINDINGS)
-    assert board["e1"] == {"color": "white", "piece": "king", "robot_id": "drone-01"}
-    assert board["d1"] == {"color": "white", "piece": "queen", "robot_id": "drone-02"}
+    assert board["e1"] == {
+        "color": "white",
+        "piece": "king",
+        "robot_id": "drone-01",
+        "role": "king",
+    }
+    assert board["d1"] == {
+        "color": "white",
+        "piece": "queen",
+        "robot_id": "drone-02",
+        "role": "queen",
+    }
     assert board["e8"] == {"color": "black", "piece": "king"}
+
+
+def test_initial_board_our_side_has_roles():
+    board = initial_board("white", BINDINGS)
+    assert board["a1"]["role"] == "rook_1"
+    assert board["h1"]["role"] == "rook_2"
+    assert board["e2"]["role"] == "pawn_5"
+
+
+def test_rebind_role_updates_robot_id_on_board():
+    board = initial_board("white", BINDINGS)
+    new_board = rebind_role(board, "king", "drone-99")
+    assert new_board["e1"]["robot_id"] == "drone-99"
+    assert new_board["e1"]["role"] == "king"
+    assert board["e1"]["robot_id"] == "drone-01"  # original untouched
+
+
+def test_rebind_role_is_noop_when_piece_not_on_board():
+    board = initial_board("white", BINDINGS)
+    del board["e1"]  # king captured/removed
+    new_board = rebind_role(board, "king", "drone-99")
+    assert new_board == board
 
 
 def test_initial_board_flips_for_black():
