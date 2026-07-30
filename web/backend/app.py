@@ -69,6 +69,13 @@ async def set_our_color(payload: ColorRequest) -> dict:
     return app_state
 
 
+@app.post("/api/reset")
+async def reset_board() -> dict:
+    app_state["board"] = initial_board(app_state["our_color"], app_state["bindings"])
+    await manager.broadcast(app_state)
+    return app_state
+
+
 class BindingRequest(BaseModel):
     role: str
     robot_id: str

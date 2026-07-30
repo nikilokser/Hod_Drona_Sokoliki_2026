@@ -42,6 +42,11 @@ const connectionStatus = document.getElementById("connection-status");
 const gatewayStatus = document.getElementById("gateway-status");
 const bindingsList = document.getElementById("bindings-list");
 const messageBar = document.getElementById("message-bar");
+const resetButton = document.getElementById("reset-button");
+const confirmOverlay = document.getElementById("confirm-overlay");
+const confirmText = document.getElementById("confirm-text");
+const confirmOkButton = document.getElementById("confirm-ok");
+const confirmCancelButton = document.getElementById("confirm-cancel");
 
 let currentState = null;
 let latestRobots = [];
@@ -68,6 +73,25 @@ function svgPoint(evt) {
   const x = ((evt.clientX - rect.left) / rect.width) * VIEWBOX_SIZE - LEFT_MARGIN;
   const y = ((evt.clientY - rect.top) / rect.height) * VIEWBOX_SIZE;
   return { x, y };
+}
+
+function confirmDialog(text) {
+  return new Promise((resolve) => {
+    confirmText.textContent = text;
+    confirmOverlay.hidden = false;
+
+    const cleanup = (result) => {
+      confirmOverlay.hidden = true;
+      confirmOkButton.removeEventListener("click", onOk);
+      confirmCancelButton.removeEventListener("click", onCancel);
+      resolve(result);
+    };
+    const onOk = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+
+    confirmOkButton.addEventListener("click", onOk);
+    confirmCancelButton.addEventListener("click", onCancel);
+  });
 }
 
 function showMessage(text, kind) {
@@ -250,7 +274,7 @@ function onPointerMove(evt) {
   drag.group.setAttribute("transform", `translate(${dx}, ${dy})`);
 }
 
-function onPointerUp(evt) {
+async function onPointerUp(evt) {
   if (!drag || evt.pointerId !== drag.pointerId) return;
   const { x, y } = svgPoint(evt);
   const targetSquare = xyToSquare(x, y);
@@ -265,6 +289,16 @@ function onPointerUp(evt) {
   if (targetSquare === fromSquare) {
     render(currentState); // snap back, no API call for a no-op drop
     return;
+  }
+
+  if (currentState.mode === "manual") {
+    const confirmed = await confirmDialog(
+      `Переместить фигуру ${fromSquare} → ${targetSquare}? В режиме отладки это отправит команду роботу.`
+    );
+    if (!confirmed) {
+      render(currentState); // snap back
+      return;
+    }
   }
 
   apiMove(fromSquare, targetSquare);
@@ -315,8 +349,18 @@ async function apiSetColor(color) {
   });
 }
 
+async function apiResetBoard() {
+  await fetch("/api/reset", { method: "POST" });
+}
+
 modeSelect.addEventListener("change", () => apiSetMode(modeSelect.value));
 colorSelect.addEventListener("change", () => apiSetColor(colorSelect.value));
+resetButton.addEventListener("click", async () => {
+  const confirmed = await confirmDialog(
+    "Сбросить поле в стартовую позицию? Текущее состояние партии на доске будет потеряно."
+  );
+  if (confirmed) apiResetBoard();
+});
 
 function connectWebSocket() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";

@@ -78,7 +78,8 @@ def test_manual_mode_keeps_move_on_gateway_error(client):
 def test_our_color_switch_resets_board(client):
     response = client.post("/api/our-color", json={"color": "black"})
     assert response.status_code == 200
-    assert app_module.app_state["board"]["e8"]["robot_id"] == "drone-01"
+    expected_king_robot = app_module.app_state["bindings"]["king"]
+    assert app_module.app_state["board"]["e8"]["robot_id"] == expected_king_robot
 
 
 def test_list_robots_proxies_gateway(client):
@@ -113,3 +114,22 @@ def test_set_binding_rejects_unknown_role(client):
     )
     assert response.status_code == 422
     assert "dragon" not in app_module.app_state["bindings"]
+
+
+def test_reset_restores_starting_position(client):
+    client.post("/api/mode", json={"mode": "correct"})
+    client.post("/api/move", json={"from": "e2", "to": "e4"})
+    assert "e2" not in app_module.app_state["board"]
+
+    response = client.post("/api/reset")
+    assert response.status_code == 200
+    assert app_module.app_state["board"]["e2"]["piece"] == "pawn"
+    assert "e4" not in app_module.app_state["board"]
+
+
+def test_reset_keeps_current_our_color(client):
+    client.post("/api/our-color", json={"color": "black"})
+    response = client.post("/api/reset")
+    assert response.status_code == 200
+    assert app_module.app_state["board"]["e8"]["piece"] == "king"
+    assert app_module.app_state["our_color"] == "black"

@@ -200,3 +200,61 @@ select {
   background: #1f3a2e;
   color: #b4ffcf;
 }
+
+button {
+  background: #2a2f3d;
+  color: var(--panel-fg);
+  border: 1px solid #3a4152;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #333a4a;
+}
+
+.danger-button {
+  background: #4a2020;
+  border-color: #6b2b2b;
+  color: #ffb4b4;
+}
+
+.danger-button:hover {
+  background: #5a2626;
+}
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.confirm-overlay[hidden] {
+  display: none;
+}
+
+.confirm-dialog {
+  background: var(--panel-bg);
+  border-radius: 12px;
+  padding: 20px 24px;
+  max-width: 360px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.confirm-dialog p {
+  margin: 0 0 16px;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}

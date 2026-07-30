@@ -23,6 +23,9 @@
           <option value="black">Чёрные</option>
         </select>
       </div>
+      <div class="toolbar-group">
+        <button id="reset-button" class="danger-button" type="button">Сбросить поле</button>
+      </div>
       <div class="toolbar-group status" id="connection-status">подключение…</div>
       <div class="toolbar-group status" id="gateway-status">Gateway: …</div>
     </header>
@@ -37,6 +40,16 @@
     </main>
 
     <div id="message-bar" class="message-bar" hidden></div>
+  </div>
+
+  <div id="confirm-overlay" class="confirm-overlay" hidden>
+    <div class="confirm-dialog">
+      <p id="confirm-text"></p>
+      <div class="confirm-actions">
+        <button id="confirm-cancel" type="button">Отмена</button>
+        <button id="confirm-ok" class="danger-button" type="button">Подтвердить</button>
+      </div>
+    </div>
   </div>
 
   <script src="/board.js"></script>
