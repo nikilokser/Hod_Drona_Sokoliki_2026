@@ -1,0 +1,86 @@
+--- a/ros1_ws/src/drone_agent_mcp_ros1/src/drone_agent_mcp_ros1/drone_ros_bridge.py
++++ b/ros1_ws/src/drone_agent_mcp_ros1/src/drone_agent_mcp_ros1/drone_ros_bridge.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import concurrent.futures
+ import json
+ import math
+ import os
+@@ -111,6 +112,15 @@
+         }
+         self.proxies = {}
+         self._build_proxies()
++        # rospy.ServiceProxy.__call__() has no built-in timeout: if a flight
++        # service handler never responds, the call blocks forever and, since
++        # call_tool() holds self.lock for its whole duration, every later
++        # tool call (including unrelated ones for the next fleet command)
++        # deadlocks on that lock too. Running the blocking call in this pool
++        # lets us bound the wait with a future timeout.
++        self._service_executor = concurrent.futures.ThreadPoolExecutor(
++            max_workers=4, thread_name_prefix="ros-svc-call"
++        )
+         rospy.loginfo(
+             "Drone MCP backend: services=%s, flight_tools=%s, max_altitude=%.2f, max_speed=%.2f",
+             FLIGHT_SERVICE_PACKAGE or "missing",
+@@ -162,14 +172,28 @@
+                 "success": False,
+                 "error": "ROS service %s is unavailable" % self.service_names[key],
+             }
++        timeout = self.limits.service_timeout_s
++        future = self._service_executor.submit(self.proxies[key], **kwargs)
+         try:
+-            response = self.proxies[key](**kwargs)
+-            data = _response_to_dict(response)
+-            data.setdefault("success", True)
+-            data["service"] = self.service_names[key]
+-            return data
++            response = future.result(timeout=timeout)
++        except concurrent.futures.TimeoutError:
++            rospy.logerr(
++                "ROS service %s did not respond within %.1fs; call is still running in the background",
++                self.service_names[key],
++                timeout,
++            )
++            return {
++                "success": False,
++                "error": "ROS service %s did not respond within %.1fs" % (self.service_names[key], timeout),
++                "service": self.service_names[key],
++                "timed_out": True,
++            }
+         except (rospy.ServiceException, rospy.ROSException) as exc:
+             return {"success": False, "error": str(exc), "service": self.service_names[key]}
++        data = _response_to_dict(response)
++        data.setdefault("success", True)
++        data["service"] = self.service_names[key]
++        return data
+ 
+     def _require_flight_enabled(self, action, allow_safety_action=False):
+         if self._flight_enabled():
+@@ -201,12 +225,24 @@
+         method = getattr(self, method_name, None)
+         if not callable(method):
+             return {"success": False, "error": "Unknown tool: %s" % name}
++        # A plain `with self.lock:` would block here forever if a previous
++        # tool call is stuck inside a service call that never returned (see
++        # the executor/timeout in _call()). Bound the wait instead of
++        # deadlocking every future command behind one stuck call.
++        lock_timeout = self.limits.service_timeout_s + 2.0
++        if not self.lock.acquire(timeout=lock_timeout):
++            return {
++                "success": False,
++                "error": "Drone bridge is still busy with a previous tool call (lock held > %.1fs)" % lock_timeout,
++                "tool": name,
++            }
+         try:
+-            with self.lock:
+-                return method(**dict(arguments or {}))
++            return method(**dict(arguments or {}))
+         except Exception as exc:
+             rospy.logerr("Tool %s failed: %s\n%s", name, exc, traceback.format_exc())
+             return {"success": False, "error": str(exc), "tool": name}
++        finally:
++            self.lock.release()
+ 
+     def get_available_tools(self):
+         return {

@@ -1,0 +1,926 @@
+from __future__ import annotations
+
+import concurrent.futures
+import json
+import math
+import os
+import re
+import threading
+import time
+import traceback
+
+import rospy
+from std_srvs.srv import Trigger
+
+from drone_agent_mcp_ros1.safety import DroneSafetyLimits, env_bool, finite_float
+from drone_agent_mcp_ros1.tool_schemas import mcp_tools, sequence_step_argument_names
+from drone_agent_mcp_ros1.utils import clamp, clamp_int, normalize_effect, parse_bool, parse_color
+
+
+# SVERH images use the `sverk` service package. Upstream Clover uses `clover`.
+try:
+    from sverk import srv as flight_srv
+    FLIGHT_SERVICE_PACKAGE = "sverk"
+except ImportError:
+    try:
+        from clover import srv as flight_srv
+        FLIGHT_SERVICE_PACKAGE = "clover"
+    except ImportError:
+        flight_srv = None
+        FLIGHT_SERVICE_PACKAGE = None
+
+try:
+    from clover.srv import SetLEDEffect
+except ImportError:
+    try:
+        from sverk.srv import SetLEDEffect
+    except ImportError:
+        SetLEDEffect = None
+
+
+TELEMETRY_FIELDS = (
+    "frame_id", "connected", "armed", "mode", "x", "y", "z",
+    "lat", "lon", "alt", "vx", "vy", "vz", "roll", "pitch", "yaw",
+    "roll_rate", "pitch_rate", "yaw_rate", "voltage", "cell_voltage",
+)
+
+
+CHESS_CELL_RE = re.compile(r"^[a-h][1-8]$")
+
+
+def _env_float(name, default):
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return float(default)
+    try:
+        return float(str(raw).replace(",", "."))
+    except ValueError:
+        return float(default)
+
+
+def _safe_number(value):
+    if isinstance(value, (int, float)):
+        return float(value) if math.isfinite(float(value)) else None
+    return value
+
+
+def _response_to_dict(response):
+    result = {}
+    for name in TELEMETRY_FIELDS:
+        if hasattr(response, name):
+            result[name] = _safe_number(getattr(response, name))
+    if hasattr(response, "success"):
+        result["success"] = bool(response.success)
+    if hasattr(response, "message"):
+        result["message"] = str(response.message)
+    return result
+
+
+class DroneRos1Bridge:
+    """High-level, safety-limited MCP backend for ROS 1 SVERH/Clover."""
+
+    def __init__(self):
+        self.limits = DroneSafetyLimits()
+        self.flight_requested = env_bool("DRONE_ENABLE_FLIGHT_TOOLS", False)
+        self.allow_land_when_disabled = env_bool("DRONE_ALLOW_LAND_WHEN_DISABLED", True)
+        self.land_on_sequence_error = env_bool("DRONE_LAND_ON_SEQUENCE_ERROR", False)
+        self.chess_map_frame_id = str(os.getenv("CHESS_MAP_FRAME_ID", "aruco_map")).strip() or "aruco_map"
+        self.chess_map_origin_x_m = _env_float("CHESS_MAP_ORIGIN_X_M", 0.0)
+        self.chess_map_origin_y_m = _env_float("CHESS_MAP_ORIGIN_Y_M", 0.0)
+        self.chess_cell_size_m = _env_float("CHESS_CELL_SIZE_M", 0.40)
+        self.takeoff_speed_mps = _env_float("DRONE_TAKEOFF_SPEED_MPS", 0.15)
+        self.chess_takeoff_height_m = _env_float("CHESS_TAKEOFF_HEIGHT_M", self.limits.default_takeoff_height_m)
+        self.chess_flight_altitude_m = _env_float(
+            "CHESS_FLIGHT_ALTITUDE_M",
+            max(self.limits.min_flight_altitude_m, self.chess_takeoff_height_m),
+        )
+        self.chess_map_wait_timeout_s = _env_float("CHESS_MAP_WAIT_TIMEOUT_S", 10.0)
+        self.chess_arrival_tolerance_m = _env_float("CHESS_ARRIVAL_TOLERANCE_M", 0.20)
+        self.chess_settle_duration_s = _env_float("CHESS_SETTLE_DURATION_S", 2.0)
+        self.chess_settle_timeout_s = _env_float("CHESS_SETTLE_TIMEOUT_S", 10.0)
+        self.lock = threading.RLock()
+
+        self.service_names = {
+            "telemetry": os.getenv("DRONE_GET_TELEMETRY_SERVICE", "get_telemetry"),
+            "navigate": os.getenv("DRONE_NAVIGATE_SERVICE", "navigate"),
+            "navigate_global": os.getenv("DRONE_NAVIGATE_GLOBAL_SERVICE", "navigate_global"),
+            "set_altitude": os.getenv("DRONE_SET_ALTITUDE_SERVICE", "set_altitude"),
+            "set_yaw": os.getenv("DRONE_SET_YAW_SERVICE", "set_yaw"),
+            "set_position": os.getenv("DRONE_SET_POSITION_SERVICE", "set_position"),
+            "land": os.getenv("DRONE_LAND_SERVICE", "land"),
+            "led": os.getenv("DRONE_LED_EFFECT_SERVICE", "/led/set_effect"),
+        }
+        self.proxies = {}
+        self._build_proxies()
+        # rospy.ServiceProxy.__call__() has no built-in timeout: if a flight
+        # service handler never responds, the call blocks forever and, since
+        # call_tool() holds self.lock for its whole duration, every later
+        # tool call (including unrelated ones for the next fleet command)
+        # deadlocks on that lock too. Running the blocking call in this pool
+        # lets us bound the wait with a future timeout.
+        self._service_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="ros-svc-call"
+        )
+        rospy.loginfo(
+            "Drone MCP backend: services=%s, flight_tools=%s, max_altitude=%.2f, max_speed=%.2f",
+            FLIGHT_SERVICE_PACKAGE or "missing",
+            self.flight_requested,
+            self.limits.max_altitude_m,
+            self.limits.max_speed_mps,
+        )
+        if not self.flight_requested:
+            rospy.logwarn("Flight commands are administratively locked by DRONE_ENABLE_FLIGHT_TOOLS=0.")
+
+    def _flight_enabled(self):
+        return bool(self.flight_requested)
+
+    def _build_proxies(self):
+        if flight_srv is not None:
+            mappings = {
+                "telemetry": "GetTelemetry",
+                "navigate": "Navigate",
+                "navigate_global": "NavigateGlobal",
+                "set_altitude": "SetAltitude",
+                "set_yaw": "SetYaw",
+                "set_position": "SetPosition",
+            }
+            for key, class_name in mappings.items():
+                service_type = getattr(flight_srv, class_name, None)
+                if service_type is not None:
+                    self.proxies[key] = rospy.ServiceProxy(self.service_names[key], service_type)
+        self.proxies["land"] = rospy.ServiceProxy(self.service_names["land"], Trigger)
+        if SetLEDEffect is not None:
+            self.proxies["led"] = rospy.ServiceProxy(self.service_names["led"], SetLEDEffect)
+
+    def _service_available(self, key, timeout=None):
+        if key not in self.proxies:
+            return False
+        try:
+            rospy.wait_for_service(
+                self.service_names[key],
+                timeout=self.limits.service_timeout_s if timeout is None else float(timeout),
+            )
+            return True
+        except rospy.ROSException:
+            return False
+
+    def _call(self, key, **kwargs):
+        if key not in self.proxies:
+            return {"success": False, "error": "ROS service type for %s is unavailable" % key}
+        if not self._service_available(key):
+            return {
+                "success": False,
+                "error": "ROS service %s is unavailable" % self.service_names[key],
+            }
+        timeout = self.limits.service_timeout_s
+        future = self._service_executor.submit(self.proxies[key], **kwargs)
+        try:
+            response = future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            rospy.logerr(
+                "ROS service %s did not respond within %.1fs; call is still running in the background",
+                self.service_names[key],
+                timeout,
+            )
+            return {
+                "success": False,
+                "error": "ROS service %s did not respond within %.1fs" % (self.service_names[key], timeout),
+                "service": self.service_names[key],
+                "timed_out": True,
+            }
+        except (rospy.ServiceException, rospy.ROSException) as exc:
+            return {"success": False, "error": str(exc), "service": self.service_names[key]}
+        data = _response_to_dict(response)
+        data.setdefault("success", True)
+        data["service"] = self.service_names[key]
+        return data
+
+    def _require_flight_enabled(self, action, allow_safety_action=False):
+        if self._flight_enabled():
+            return None
+        if allow_safety_action:
+            return None
+        return {
+            "success": False,
+            "error": "%s is locked. Set DRONE_ENABLE_FLIGHT_TOOLS=1 to allow flight tools." % action,
+        }
+
+    def _filtered_sequence_arguments(self, step_type, step):
+        allowed_arguments = sequence_step_argument_names(step_type)
+        if not allowed_arguments:
+            return dict(step), []
+        ignored = sorted(name for name in step if name not in allowed_arguments)
+        return {name: value for name, value in step.items() if name in allowed_arguments}, ignored
+
+    def call_tool(self, name, arguments=None):
+        aliases = {
+            "get_telemetry": "drone_get_telemetry",
+            "takeoff": "drone_takeoff",
+            "land": "drone_land",
+            "navigate": "drone_navigate",
+            "move_relative": "drone_move_relative",
+            "hold_position": "drone_hold_position",
+        }
+        method_name = aliases.get(str(name), str(name))
+        method = getattr(self, method_name, None)
+        if not callable(method):
+            return {"success": False, "error": "Unknown tool: %s" % name}
+        # A plain `with self.lock:` would block here forever if a previous
+        # tool call is stuck inside a service call that never returned (see
+        # the executor/timeout in _call()). Bound the wait instead of
+        # deadlocking every future command behind one stuck call.
+        lock_timeout = self.limits.service_timeout_s + 2.0
+        if not self.lock.acquire(timeout=lock_timeout):
+            return {
+                "success": False,
+                "error": "Drone bridge is still busy with a previous tool call (lock held > %.1fs)" % lock_timeout,
+                "tool": name,
+            }
+        try:
+            return method(**dict(arguments or {}))
+        except Exception as exc:
+            rospy.logerr("Tool %s failed: %s\n%s", name, exc, traceback.format_exc())
+            return {"success": False, "error": str(exc), "tool": name}
+        finally:
+            self.lock.release()
+
+    def get_available_tools(self):
+        return {
+            "success": True,
+            "tools": [{"name": t["name"], "description": t.get("description", "")} for t in mcp_tools()],
+            "ros_version": 1,
+            "platform": "SVERH/Clover",
+            "service_package": FLIGHT_SERVICE_PACKAGE,
+            "flight_tools_requested": self.flight_requested,
+            "flight_tools_enabled": self._flight_enabled(),
+            "land_on_sequence_error": self.land_on_sequence_error,
+        }
+
+    def wait(self, duration_s=1.0):
+        duration = float(clamp(duration_s, 0.0, 60.0))
+        rospy.sleep(duration)
+        return {"success": True, "duration_s": duration, "message": "Wait complete."}
+
+    def drone_get_telemetry(self, frame_id="map"):
+        frame = self.limits.validate_frame(frame_id, allow_navigate_target=True)
+        data = self._call("telemetry", frame_id=frame)
+        if data.get("success"):
+            yaw = data.get("yaw")
+            if isinstance(yaw, (int, float)):
+                data["yaw_deg"] = math.degrees(yaw)
+            data["requested_frame_id"] = frame
+        return data
+
+    def drone_get_system_status(self):
+        services = {}
+        for key in ("telemetry", "navigate", "set_altitude", "set_yaw", "set_position", "land", "led"):
+            services[key] = {
+                "name": self.service_names[key],
+                "available": self._service_available(key, timeout=0.25),
+                "type_loaded": key in self.proxies,
+            }
+        telemetry = self.drone_get_telemetry("map") if services["telemetry"]["available"] else {
+            "success": False,
+            "error": "get_telemetry unavailable",
+        }
+        connected = bool(telemetry.get("connected")) if telemetry.get("success") else False
+        ready = services["telemetry"]["available"] and services["navigate"]["available"] and connected
+        return {
+            "success": True,
+            "ready_for_flight_commands": bool(ready and self._flight_enabled()),
+            "flight_tools_requested": self.flight_requested,
+            "flight_tools_enabled": self._flight_enabled(),
+            "land_on_sequence_error": self.land_on_sequence_error,
+            "telemetry_connected": connected,
+            "armed": telemetry.get("armed"),
+            "mode": telemetry.get("mode"),
+            "voltage": telemetry.get("voltage"),
+            "services": services,
+            "safety_limits": {
+                "max_altitude_m": self.limits.max_altitude_m,
+                "min_flight_altitude_m": self.limits.min_flight_altitude_m,
+                "max_speed_mps": self.limits.max_speed_mps,
+                "max_horizontal_coordinate_m": self.limits.max_horizontal_coordinate_m,
+                "max_relative_distance_m": self.limits.max_relative_distance_m,
+                "allowed_frames": sorted(self.limits.allowed_frames),
+            },
+        }
+
+    def _connected_telemetry(self):
+        telemetry = self.drone_get_telemetry("map")
+        if not telemetry.get("success"):
+            return telemetry
+        if self.limits.require_connected and not telemetry.get("connected"):
+            return {"success": False, "error": "Flight controller is not connected", "telemetry": telemetry}
+        return {"success": True, "telemetry": telemetry}
+
+    def _preflight(self):
+        connected = self._connected_telemetry()
+        if not connected.get("success"):
+            return connected
+        telemetry = connected["telemetry"]
+        if not telemetry.get("success"):
+            return telemetry
+        if self.limits.require_connected and not telemetry.get("connected"):
+            return {"success": False, "error": "Flight controller is not connected", "telemetry": telemetry}
+        voltage = telemetry.get("voltage")
+        if (
+            self.limits.min_takeoff_voltage_v > 0
+            and isinstance(voltage, (int, float))
+            and voltage < self.limits.min_takeoff_voltage_v
+        ):
+            return {
+                "success": False,
+                "error": "Voltage %.2f V is below DRONE_MIN_TAKEOFF_VOLTAGE_V %.2f V"
+                % (voltage, self.limits.min_takeoff_voltage_v),
+                "telemetry": telemetry,
+            }
+        return {"success": True, "telemetry": telemetry}
+
+    def drone_takeoff(
+        self,
+        height_m=None,
+        speed_mps=None,
+        wait=True,
+        tolerance_m=None,
+        timeout_s=None,
+    ):
+        locked = self._require_flight_enabled("drone_takeoff")
+        if locked:
+            return locked
+        preflight = self._preflight()
+        if not preflight.get("success"):
+            return preflight
+        height = self.limits.validate_takeoff_height(height_m)
+        speed = self.limits.validate_speed(self.takeoff_speed_mps if speed_mps is None else speed_mps)
+        response = self._call(
+            "navigate",
+            x=0.0,
+            y=0.0,
+            z=height,
+            yaw=float("nan"),
+            speed=speed,
+            frame_id="body",
+            auto_arm=True,
+        )
+        if not response.get("success") or not parse_bool(wait, True):
+            return response
+        arrival = self.drone_wait_until_arrival(tolerance_m=tolerance_m, timeout_s=timeout_s)
+        return {
+            "success": bool(arrival.get("success")),
+            "command": response,
+            "arrival": arrival,
+            "height_m": height,
+            "speed_mps": speed,
+        }
+
+    def drone_navigate(
+        self,
+        x,
+        y,
+        z,
+        frame_id="map",
+        speed_mps=None,
+        yaw_deg=None,
+        wait=True,
+        tolerance_m=None,
+        timeout_s=None,
+    ):
+        locked = self._require_flight_enabled("drone_navigate")
+        if locked:
+            return locked
+        connected = self._connected_telemetry()
+        if not connected.get("success"):
+            return connected
+        x, y, z, frame = self.limits.validate_absolute_target(x, y, z, frame_id)
+        speed = self.limits.validate_speed(speed_mps)
+        yaw = float("nan") if yaw_deg is None else math.radians(finite_float(yaw_deg, "yaw_deg"))
+        response = self._call(
+            "navigate",
+            x=x,
+            y=y,
+            z=z,
+            yaw=yaw,
+            speed=speed,
+            frame_id=frame,
+            auto_arm=False,
+        )
+        if not response.get("success") or not parse_bool(wait, True):
+            return response
+        arrival = self.drone_wait_until_arrival(tolerance_m=tolerance_m, timeout_s=timeout_s)
+        return {
+            "success": bool(arrival.get("success")),
+            "command": response,
+            "arrival": arrival,
+            "target": {"x": x, "y": y, "z": z, "frame_id": frame, "yaw_deg": yaw_deg},
+        }
+
+    def drone_move_relative(
+        self,
+        forward_m=0.5,
+        left_m=0.0,
+        up_m=0.0,
+        speed_mps=None,
+        yaw_deg=None,
+        wait=True,
+        tolerance_m=None,
+        timeout_s=None,
+    ):
+        locked = self._require_flight_enabled("drone_move_relative")
+        if locked:
+            return locked
+        connected = self._connected_telemetry()
+        if not connected.get("success"):
+            return connected
+        current = connected.get("telemetry", {})
+        forward, left, up = self.limits.validate_relative_target(forward_m, left_m, up_m)
+        current_z = current.get("z")
+        if isinstance(current_z, (int, float)):
+            estimated_z = float(current_z) + up
+            if estimated_z < self.limits.min_flight_altitude_m or estimated_z > self.limits.max_altitude_m:
+                return {
+                    "success": False,
+                    "error": "Estimated target altitude %.2f m is outside the configured safety envelope" % estimated_z,
+                    "current_z": current_z,
+                    "up_m": up,
+                }
+        speed = self.limits.validate_speed(speed_mps)
+        yaw = float("nan") if yaw_deg is None else math.radians(finite_float(yaw_deg, "yaw_deg"))
+        response = self._call(
+            "navigate",
+            x=forward,
+            y=left,
+            z=up,
+            yaw=yaw,
+            speed=speed,
+            frame_id="body",
+            auto_arm=False,
+        )
+        if not response.get("success") or not parse_bool(wait, True):
+            return response
+        arrival = self.drone_wait_until_arrival(tolerance_m=tolerance_m, timeout_s=timeout_s)
+        return {
+            "success": bool(arrival.get("success")),
+            "command": response,
+            "arrival": arrival,
+            "relative_target": {"forward_m": forward, "left_m": left, "up_m": up},
+        }
+
+    def _normalize_chess_cell(self, cell):
+        value = str(cell or "").strip().lower()
+        if not CHESS_CELL_RE.fullmatch(value):
+            raise ValueError("cell must match a1..h8")
+        return value
+
+    def _chess_cell_target(self, cell):
+        normalized = self._normalize_chess_cell(cell)
+        file_index = ord(normalized[0]) - ord("a")
+        rank_index = int(normalized[1]) - 1
+        x = self.chess_map_origin_x_m + (file_index + 0.5) * self.chess_cell_size_m
+        y = self.chess_map_origin_y_m + (rank_index + 0.5) * self.chess_cell_size_m
+        return {"cell": normalized, "x": x, "y": y, "frame_id": self.chess_map_frame_id}
+
+    def _wait_for_frame_telemetry(self, frame_id, timeout_s=None):
+        timeout = self.chess_map_wait_timeout_s if timeout_s is None else finite_float(timeout_s, "timeout_s")
+        timeout = float(clamp(timeout, 0.2, 120.0))
+        deadline = time.monotonic() + timeout
+        last = None
+        while not rospy.is_shutdown() and time.monotonic() < deadline:
+            last = self.drone_get_telemetry(frame_id)
+            if last.get("success") and all(isinstance(last.get(name), (int, float)) for name in ("x", "y", "z")):
+                return {"success": True, "telemetry": last, "frame_id": frame_id}
+            rospy.sleep(0.2)
+        return {
+            "success": False,
+            "error": "Telemetry for frame %s is unavailable after %.1f s" % (frame_id, timeout),
+            "frame_id": frame_id,
+            "telemetry": last,
+        }
+
+    @staticmethod
+    def _error_text(result, default="Operation failed"):
+        if not isinstance(result, dict):
+            return default
+        for key in ("error", "message"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        nested = result.get("results")
+        if isinstance(nested, list):
+            for item in reversed(nested):
+                if not isinstance(item, dict):
+                    continue
+                for key in ("error", "message"):
+                    value = item.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+        return default
+
+    def _wait_for_chess_target_stable(
+        self,
+        *,
+        frame_id,
+        target_x,
+        target_y,
+        tolerance_m,
+        stable_duration_s,
+        timeout_s,
+    ):
+        tolerance = float(clamp(finite_float(tolerance_m, "arrival_tolerance_m"), 0.02, 0.5))
+        stable_duration = float(clamp(finite_float(stable_duration_s, "settle_duration_s"), 0.0, 30.0))
+        timeout = float(clamp(finite_float(timeout_s, "settle_timeout_s"), max(1.0, stable_duration), 120.0))
+        deadline = time.monotonic() + timeout
+        stable_since = None
+        last_error = None
+        last_telemetry = None
+
+        while not rospy.is_shutdown() and time.monotonic() < deadline:
+            telemetry = self.drone_get_telemetry(frame_id)
+            last_telemetry = telemetry
+            x = telemetry.get("x")
+            y = telemetry.get("y")
+            if telemetry.get("success") and isinstance(x, (int, float)) and isinstance(y, (int, float)):
+                last_error = math.hypot(float(target_x) - float(x), float(target_y) - float(y))
+                now = time.monotonic()
+                if last_error <= tolerance:
+                    if stable_since is None:
+                        stable_since = now
+                    stable_for = now - stable_since
+                    if stable_for >= stable_duration:
+                        return {
+                            "success": True,
+                            "horizontal_error_m": last_error,
+                            "tolerance_m": tolerance,
+                            "stable_duration_s": stable_for,
+                            "telemetry": telemetry,
+                        }
+                else:
+                    stable_since = None
+            else:
+                stable_since = None
+            rospy.sleep(0.1)
+
+        return {
+            "success": False,
+            "error": "Chess target did not remain within %.3f m for %.1f s before %.1f s timeout"
+            % (tolerance, stable_duration, timeout),
+            "horizontal_error_m": last_error,
+            "tolerance_m": tolerance,
+            "required_stable_duration_s": stable_duration,
+            "telemetry": last_telemetry,
+        }
+
+    def drone_navigate_to_chess_cell(
+        self,
+        cell,
+        takeoff_height_m=None,
+        flight_altitude_m=None,
+        speed_mps=None,
+        takeoff_speed_mps=None,
+        land_after=True,
+        wait_for_map_s=None,
+        land_wait_until_disarmed=False,
+        land_timeout_s=None,
+        arrival_tolerance_m=None,
+        settle_duration_s=None,
+        settle_timeout_s=None,
+    ):
+        locked = self._require_flight_enabled("drone_navigate_to_chess_cell")
+        if locked:
+            return locked
+        connected = self._connected_telemetry()
+        if not connected.get("success"):
+            return connected
+
+        target = self._chess_cell_target(cell)
+        takeoff_height = self.limits.validate_takeoff_height(
+            self.chess_takeoff_height_m if takeoff_height_m is None else takeoff_height_m
+        )
+        target_z = self.limits.validate_takeoff_height(
+            self.chess_flight_altitude_m if flight_altitude_m is None else flight_altitude_m
+        )
+        speed = self.limits.validate_speed(speed_mps)
+        takeoff_speed = self.limits.validate_speed(
+            self.takeoff_speed_mps if takeoff_speed_mps is None else takeoff_speed_mps
+        )
+        wait_timeout = self.chess_map_wait_timeout_s if wait_for_map_s is None else finite_float(wait_for_map_s, "wait_for_map_s")
+        wait_timeout = float(clamp(wait_timeout, 0.2, 120.0))
+        arrival_tolerance = (
+            self.chess_arrival_tolerance_m
+            if arrival_tolerance_m is None
+            else finite_float(arrival_tolerance_m, "arrival_tolerance_m")
+        )
+        arrival_tolerance = float(clamp(arrival_tolerance, 0.02, 0.5))
+        settle_duration = (
+            self.chess_settle_duration_s
+            if settle_duration_s is None
+            else finite_float(settle_duration_s, "settle_duration_s")
+        )
+        settle_timeout = (
+            self.chess_settle_timeout_s
+            if settle_timeout_s is None
+            else finite_float(settle_timeout_s, "settle_timeout_s")
+        )
+        map_frame = self.limits.validate_frame(target["frame_id"])
+
+        telemetry = connected["telemetry"]
+        current_z_map = telemetry.get("z")
+        airborne = bool(telemetry.get("armed")) or (
+            isinstance(current_z_map, (int, float)) and float(current_z_map) >= self.limits.min_flight_altitude_m + 0.05
+        )
+
+        takeoff_result = None
+        if not airborne:
+            takeoff_result = self.drone_takeoff(height_m=takeoff_height, speed_mps=takeoff_speed, wait=True)
+            if not takeoff_result.get("success"):
+                return {
+                    "success": False,
+                    "takeoff": takeoff_result,
+                    "target": {"x": target["x"], "y": target["y"], "z": target_z, "frame_id": map_frame, "cell": target["cell"]},
+                }
+
+        localized = self._wait_for_frame_telemetry(map_frame, timeout_s=wait_timeout)
+        if not localized.get("success"):
+            hold_result = self.drone_hold_position()
+            return {
+                "success": False,
+                "error": localized.get("error"),
+                "frame_id": map_frame,
+                "target": {"x": target["x"], "y": target["y"], "z": target_z, "frame_id": map_frame, "cell": target["cell"]},
+                "takeoff": takeoff_result,
+                "telemetry": localized.get("telemetry"),
+                "safety_hold": hold_result,
+            }
+
+        current = localized["telemetry"]
+        current_x = float(current["x"])
+        current_y = float(current["y"])
+        current_z = float(current["z"])
+        tolerance = arrival_tolerance
+        needs_x = abs(target["x"] - current_x) > tolerance
+
+        steps = []
+        if needs_x:
+            steps.append(
+                {
+                    "type": "drone_navigate",
+                    "x": target["x"],
+                    "y": current_y,
+                    "z": target_z,
+                    "frame_id": map_frame,
+                    "speed_mps": speed,
+                    "wait": True,
+                }
+            )
+        steps.append(
+            {
+                "type": "drone_navigate",
+                "x": target["x"],
+                "y": target["y"],
+                "z": target_z,
+                "frame_id": map_frame,
+                "speed_mps": speed,
+                "wait": True,
+            }
+        )
+
+        sequence = self.drone_run_sequence(steps)
+        result = {
+            "success": bool(sequence.get("success")),
+            "cell": target["cell"],
+            "frame_id": map_frame,
+            "target": {"x": target["x"], "y": target["y"], "z": target_z, "frame_id": map_frame},
+            "current_pose": {"x": current_x, "y": current_y, "z": current_z, "frame_id": map_frame},
+            "takeoff": takeoff_result,
+            "sequence": sequence,
+        }
+        if not sequence.get("success"):
+            result["error"] = self._error_text(sequence, "Chess navigation sequence failed")
+            return result
+
+        stabilization = self._wait_for_chess_target_stable(
+            frame_id=map_frame,
+            target_x=target["x"],
+            target_y=target["y"],
+            tolerance_m=arrival_tolerance,
+            stable_duration_s=settle_duration,
+            timeout_s=settle_timeout,
+        )
+        result["stabilization"] = stabilization
+        if not stabilization.get("success"):
+            result["success"] = False
+            result["error"] = self._error_text(stabilization, "Chess target stabilization failed")
+            if parse_bool(land_after, True):
+                landing_kwargs = {"wait_until_disarmed": land_wait_until_disarmed}
+                if land_timeout_s is not None:
+                    landing_kwargs["timeout_s"] = land_timeout_s
+                result["landing"] = self.drone_land(**landing_kwargs)
+            return result
+
+        if parse_bool(land_after, True):
+            landing_kwargs = {"wait_until_disarmed": land_wait_until_disarmed}
+            if land_timeout_s is not None:
+                landing_kwargs["timeout_s"] = land_timeout_s
+            landing = self.drone_land(**landing_kwargs)
+            result["landing"] = landing
+            if not landing.get("success"):
+                result["success"] = False
+                result["error"] = self._error_text(landing, "Chess landing failed")
+                return result
+        return result
+
+    def drone_set_altitude(self, z, frame_id="terrain"):
+        locked = self._require_flight_enabled("drone_set_altitude")
+        if locked:
+            return locked
+        connected = self._connected_telemetry()
+        if not connected.get("success"):
+            return connected
+        frame = self.limits.validate_frame(frame_id)
+        altitude = finite_float(z, "z")
+        if frame != "body":
+            if altitude < self.limits.min_flight_altitude_m or altitude > self.limits.max_altitude_m:
+                raise ValueError(
+                    "Altitude must be between %.2f and %.2f m"
+                    % (self.limits.min_flight_altitude_m, self.limits.max_altitude_m)
+                )
+        elif abs(altitude) > self.limits.max_relative_vertical_m:
+            raise ValueError("Relative altitude change exceeds DRONE_MAX_RELATIVE_VERTICAL_M")
+        return self._call("set_altitude", z=altitude, frame_id=frame)
+
+    def drone_set_yaw(self, yaw_deg=None, relative_deg=None, frame_id="map"):
+        locked = self._require_flight_enabled("drone_set_yaw")
+        if locked:
+            return locked
+        connected = self._connected_telemetry()
+        if not connected.get("success"):
+            return connected
+        if yaw_deg is None and relative_deg is None:
+            raise ValueError("Set yaw_deg or relative_deg")
+        if relative_deg is not None:
+            yaw = math.radians(finite_float(relative_deg, "relative_deg"))
+            frame = "body"
+        else:
+            yaw = math.radians(finite_float(yaw_deg, "yaw_deg"))
+            frame = self.limits.validate_frame(frame_id)
+        return self._call("set_yaw", yaw=yaw, frame_id=frame)
+
+    def drone_hold_position(self, frame_id="map"):
+        locked = self._require_flight_enabled("drone_hold_position", allow_safety_action=True)
+        if locked:
+            return locked
+        frame = self.limits.validate_frame(frame_id)
+        telemetry = self.drone_get_telemetry(frame)
+        if not telemetry.get("success"):
+            return telemetry
+        for field in ("x", "y", "z", "yaw"):
+            if not isinstance(telemetry.get(field), (int, float)):
+                return {"success": False, "error": "Telemetry field %s is unavailable" % field}
+        response = self._call(
+            "set_position",
+            x=float(telemetry["x"]),
+            y=float(telemetry["y"]),
+            z=float(telemetry["z"]),
+            yaw=float(telemetry["yaw"]),
+            frame_id=frame,
+            auto_arm=False,
+        )
+        response["held_pose"] = {
+            "x": telemetry["x"],
+            "y": telemetry["y"],
+            "z": telemetry["z"],
+            "yaw_deg": telemetry.get("yaw_deg"),
+            "frame_id": frame,
+        }
+        return response
+
+    def drone_wait_until_arrival(self, tolerance_m=None, timeout_s=None):
+        tolerance = self.limits.arrival_tolerance_m if tolerance_m is None else finite_float(tolerance_m, "tolerance_m")
+        timeout = self.limits.navigation_timeout_s if timeout_s is None else finite_float(timeout_s, "timeout_s")
+        tolerance = float(clamp(tolerance, 0.05, 2.0))
+        timeout = float(clamp(timeout, 0.5, 600.0))
+        deadline = time.monotonic() + timeout
+        last_distance = None
+        while not rospy.is_shutdown() and time.monotonic() < deadline:
+            telemetry = self.drone_get_telemetry("navigate_target")
+            if not telemetry.get("success"):
+                return telemetry
+            coords = [telemetry.get("x"), telemetry.get("y"), telemetry.get("z")]
+            if not all(isinstance(v, (int, float)) for v in coords):
+                return {"success": False, "error": "navigate_target telemetry is incomplete", "telemetry": telemetry}
+            last_distance = math.sqrt(sum(float(v) ** 2 for v in coords))
+            if last_distance <= tolerance:
+                return {
+                    "success": True,
+                    "distance_m": last_distance,
+                    "tolerance_m": tolerance,
+                    "message": "Target reached within tolerance.",
+                }
+            rospy.sleep(0.2)
+        return {
+            "success": False,
+            "error": "Arrival timeout after %.1f s" % timeout,
+            "distance_m": last_distance,
+            "tolerance_m": tolerance,
+        }
+
+    def drone_land(self, wait_until_disarmed=False, timeout_s=60.0):
+        if not self._flight_enabled() and not self.allow_land_when_disabled:
+            return self._require_flight_enabled("drone_land")
+        response = self._call("land")
+        if not response.get("success") or not parse_bool(wait_until_disarmed, False):
+            return response
+        timeout = float(clamp(finite_float(timeout_s, "timeout_s"), 1.0, 300.0))
+        deadline = time.monotonic() + timeout
+        while not rospy.is_shutdown() and time.monotonic() < deadline:
+            telemetry = self.drone_get_telemetry("map")
+            if telemetry.get("success") and telemetry.get("armed") is False:
+                response["disarmed"] = True
+                return response
+            rospy.sleep(0.5)
+        response.update({"success": False, "error": "Landing command sent, but disarm was not observed before timeout"})
+        return response
+
+    def drone_set_led_effect(self, effect="fill", color="#16B8F3", r=None, g=None, b=None):
+        effect_name = normalize_effect(effect)
+        if r is None or g is None or b is None:
+            red, green, blue = parse_color(color)
+        else:
+            red, green, blue = clamp_int(r, 0, 255), clamp_int(g, 0, 255), clamp_int(b, 0, 255)
+        response = self._call("led", effect=effect_name, r=red, g=green, b=blue)
+        response["effect"] = effect_name
+        response["rgb"] = [red, green, blue]
+        return response
+
+    def drone_run_sequence(self, steps, stop_on_error=True):
+        if not isinstance(steps, list) or not steps:
+            return {"success": False, "error": "steps must be a non-empty list"}
+        if len(steps) > 20:
+            return {"success": False, "error": "steps length exceeds 20"}
+        results = []
+        allowed = {
+            "drone_takeoff", "drone_navigate", "drone_move_relative", "drone_set_altitude",
+            "drone_set_yaw", "drone_hold_position", "drone_set_led_effect", "wait", "drone_land",
+        }
+        for index, raw in enumerate(steps):
+            step = dict(raw or {})
+            step_type = str(step.pop("type", ""))
+            if step_type not in allowed:
+                result = {"success": False, "error": "Unsupported sequence step: %s" % step_type}
+            else:
+                filtered_step, ignored_arguments = self._filtered_sequence_arguments(step_type, step)
+                result = self.call_tool(step_type, filtered_step)
+                if ignored_arguments:
+                    result = dict(result)
+                    result["ignored_arguments"] = ignored_arguments
+                    rospy.logwarn(
+                        "Ignoring unsupported arguments for sequence step %s: %s",
+                        step_type,
+                        ", ".join(ignored_arguments),
+                    )
+            result = dict(result)
+            result.update({"step_index": index, "step_type": step_type})
+            results.append(result)
+            if parse_bool(stop_on_error, True) and not result.get("success"):
+                if step_type == "drone_land":
+                    # A failed landing command must not be converted into a hold command:
+                    # that would cancel a landing attempt and leave the drone hovering.
+                    return {
+                        "success": False,
+                        "results": results,
+                        "sequence_error_action": "none",
+                        "error": self._error_text(result, "Landing step failed"),
+                    }
+                successful_takeoff = any(
+                    item.get("step_type") == "drone_takeoff" and bool(item.get("success"))
+                    for item in results
+                )
+                if self.land_on_sequence_error and successful_takeoff:
+                    landing_result = self.drone_land(wait_until_disarmed=False)
+                    if landing_result.get("success"):
+                        return {
+                            "success": False,
+                            "results": results,
+                            "sequence_error_action": "land",
+                            "sequence_error_land": landing_result,
+                            "error": self._error_text(result, "Sequence step failed"),
+                        }
+                    hold_result = self.drone_hold_position()
+                    return {
+                        "success": False,
+                        "results": results,
+                        "sequence_error_action": "land_then_hold",
+                        "sequence_error_land": landing_result,
+                        "safety_hold": hold_result,
+                        "error": self._error_text(result, "Sequence step failed"),
+                    }
+                # Hold is safer than silently continuing when we stay airborne after an error.
+                hold_result = self.drone_hold_position()
+                return {
+                    "success": False,
+                    "results": results,
+                    "sequence_error_action": "hold",
+                    "safety_hold": hold_result,
+                    "error": self._error_text(result, "Sequence step failed"),
+                }
+        return {"success": True, "results": results}
