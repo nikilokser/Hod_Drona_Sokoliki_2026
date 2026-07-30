@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from bindings import load_bindings, save_bindings
 from chat_feed import load_chat_events, run_chat_feed
 from gateway_client import get_robots, send_chat_message, send_fly_command
+from match_clock import mark_turn_done, start_match
 from state import ALL_ROLES, apply_move, initial_board, rebind_role
 from ws_manager import ConnectionManager
 
@@ -35,6 +36,12 @@ app_state: dict = {
     "our_color": "white",
     "bindings": _initial_bindings,
     "chat_events": load_chat_events(),
+    "match_clock": {
+        "status": "idle",
+        "match_started_at": None,
+        "active_color": None,
+        "move_started_at": None,
+    },
 }
 
 
@@ -140,6 +147,23 @@ class ChatSendRequest(BaseModel):
 @app.post("/api/chat/send")
 async def send_chat(payload: ChatSendRequest) -> dict:
     return send_chat_message(payload.text)
+
+
+@app.post("/api/match/start")
+async def start_match_clock() -> dict:
+    app_state["match_clock"] = start_match()
+    await manager.broadcast(app_state)
+    return app_state
+
+
+@app.post("/api/match/turn-done")
+async def turn_done() -> dict:
+    if app_state["match_clock"]["status"] != "running":
+        raise HTTPException(status_code=400, detail="матч ещё не начат")
+
+    app_state["match_clock"] = mark_turn_done(app_state["match_clock"])
+    await manager.broadcast(app_state)
+    return app_state
 
 
 @app.websocket("/ws")

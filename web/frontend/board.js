@@ -50,6 +50,14 @@ const confirmCancelButton = document.getElementById("confirm-cancel");
 const chatFeed = document.getElementById("chat-feed");
 const chatSendForm = document.getElementById("chat-send-form");
 const chatSendInput = document.getElementById("chat-send-input");
+const clockTurnEl = document.getElementById("clock-turn");
+const clockMoveEl = document.getElementById("clock-move");
+const clockMatchEl = document.getElementById("clock-match");
+const matchStartButton = document.getElementById("match-start-button");
+const turnDoneButton = document.getElementById("turn-done-button");
+
+const MOVE_LIMIT_SEC = 5 * 60;
+const MATCH_LIMIT_SEC = 2 * 60 * 60;
 
 let currentState = null;
 let latestRobots = [];
@@ -135,7 +143,85 @@ function render(state) {
 
   renderBindingsPanel(state);
   renderChatFeed(state);
+  renderClockPanel(state);
 }
+
+function renderClockPanel(state) {
+  const clock = state.match_clock;
+  const running = clock.status === "running";
+
+  if (!running) {
+    clockTurnEl.textContent = "Матч не начат";
+  } else {
+    const whoLabel = clock.active_color === state.our_color ? "наш ход" : "ход соперника";
+    const colorLabel = clock.active_color === "white" ? "Белые" : "Чёрные";
+    clockTurnEl.textContent = `Ход: ${colorLabel} (${whoLabel})`;
+  }
+
+  turnDoneButton.disabled = !running;
+  tickClocks(); // update the numbers immediately instead of waiting up to 1s
+}
+
+function formatDuration(totalSeconds) {
+  const negative = totalSeconds < 0;
+  const abs = Math.abs(Math.trunc(totalSeconds));
+  const hours = Math.floor(abs / 3600);
+  const minutes = Math.floor((abs % 3600) / 60);
+  const seconds = abs % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  const body = hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${minutes}:${pad(seconds)}`;
+  return negative ? `-${body}` : body;
+}
+
+function tickClocks() {
+  if (!currentState) return;
+  const clock = currentState.match_clock;
+
+  if (clock.status !== "running") {
+    clockMoveEl.textContent = formatDuration(MOVE_LIMIT_SEC);
+    clockMatchEl.textContent = formatDuration(MATCH_LIMIT_SEC);
+    clockMoveEl.classList.remove("overtime");
+    clockMatchEl.classList.remove("overtime");
+    return;
+  }
+
+  const now = Date.now();
+  const moveElapsed = (now - new Date(clock.move_started_at).getTime()) / 1000;
+  const matchElapsed = (now - new Date(clock.match_started_at).getTime()) / 1000;
+  const moveRemaining = MOVE_LIMIT_SEC - moveElapsed;
+  const matchRemaining = MATCH_LIMIT_SEC - matchElapsed;
+
+  clockMoveEl.textContent = formatDuration(moveRemaining);
+  clockMatchEl.textContent = formatDuration(matchRemaining);
+  clockMoveEl.classList.toggle("overtime", moveRemaining < 0);
+  clockMatchEl.classList.toggle("overtime", matchRemaining < 0);
+}
+
+async function apiStartMatch() {
+  await fetch("/api/match/start", { method: "POST" });
+}
+
+async function apiTurnDone() {
+  const response = await fetch("/api/match/turn-done", { method: "POST" });
+  if (!response.ok) {
+    const body = await response.json();
+    showMessage(body.detail || "Не удалось переключить ход", "error");
+  }
+}
+
+matchStartButton.addEventListener("click", async () => {
+  if (currentState && currentState.match_clock.status === "running") {
+    const confirmed = await confirmDialog(
+      "Начать матч заново? Текущие часы хода и матча будут сброшены."
+    );
+    if (!confirmed) return;
+  }
+  apiStartMatch();
+});
+
+turnDoneButton.addEventListener("click", () => apiTurnDone());
+
+setInterval(tickClocks, 1000);
 
 function renderChatFeed(state) {
   chatFeed.innerHTML = "";

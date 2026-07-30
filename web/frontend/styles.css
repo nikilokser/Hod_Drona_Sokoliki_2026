@@ -242,6 +242,55 @@ select {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
 }
 
+.clock-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 20px;
+  background: var(--panel-bg);
+  border-radius: 12px;
+  padding: 12px 20px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.clock-turn {
+  font-size: 0.9rem;
+  color: #c9cede;
+  min-width: 160px;
+}
+
+.clock-readout {
+  display: flex;
+  gap: 20px;
+}
+
+.clock-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.clock-label {
+  font-size: 0.7rem;
+  color: #9aa0ad;
+}
+
+.clock-value {
+  font-size: 1.3rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.clock-value.overtime {
+  color: var(--error);
+}
+
+.clock-actions {
+  display: flex;
+  gap: 10px;
+}
+
 .bindings-panel summary {
   cursor: pointer;
   padding: 10px 0;
@@ -307,6 +356,15 @@ button {
 
 button:hover {
   background: #333a4a;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button:disabled:hover {
+  background: #2a2f3d;
 }
 
 .danger-button {

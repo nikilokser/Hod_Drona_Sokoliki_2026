@@ -30,6 +30,24 @@
       <div class="toolbar-group status" id="gateway-status">Gateway: …</div>
     </header>
 
+    <div class="clock-panel">
+      <div class="clock-turn" id="clock-turn">Матч не начат</div>
+      <div class="clock-readout">
+        <div class="clock-block">
+          <span class="clock-label">Ход</span>
+          <span class="clock-value" id="clock-move">5:00</span>
+        </div>
+        <div class="clock-block">
+          <span class="clock-label">Матч</span>
+          <span class="clock-value" id="clock-match">2:00:00</span>
+        </div>
+      </div>
+      <div class="clock-actions">
+        <button id="match-start-button" type="button">Старт матча</button>
+        <button id="turn-done-button" type="button" disabled>Ход сделан</button>
+      </div>
+    </div>
+
     <details class="bindings-panel" open>
       <summary>Привязка роботов</summary>
       <div id="bindings-list" class="bindings-list"></div>

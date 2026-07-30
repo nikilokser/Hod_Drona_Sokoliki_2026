@@ -22,6 +22,12 @@ def reset_state(monkeypatch):
     app_module.app_state["board"] = initial_board("white", fresh_bindings)
     app_module.app_state["mode"] = "view"
     app_module.app_state["our_color"] = "white"
+    app_module.app_state["match_clock"] = {
+        "status": "idle",
+        "match_started_at": None,
+        "active_color": None,
+        "move_started_at": None,
+    }
     yield
 
 
@@ -152,3 +158,24 @@ def test_chat_send_surfaces_gateway_error(client):
         response = client.post("/api/chat/send", json={"text": "@rover_01 статус"})
     assert response.status_code == 200
     assert response.json()["ok"] is False
+
+
+def test_match_start_sets_running_state(client):
+    response = client.post("/api/match/start")
+    assert response.status_code == 200
+    clock = app_module.app_state["match_clock"]
+    assert clock["status"] == "running"
+    assert clock["active_color"] == "white"
+
+
+def test_turn_done_rejected_before_match_start(client):
+    response = client.post("/api/match/turn-done")
+    assert response.status_code == 400
+    assert app_module.app_state["match_clock"]["status"] == "idle"
+
+
+def test_turn_done_flips_active_color(client):
+    client.post("/api/match/start")
+    response = client.post("/api/match/turn-done")
+    assert response.status_code == 200
+    assert app_module.app_state["match_clock"]["active_color"] == "black"
