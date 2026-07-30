@@ -172,7 +172,7 @@ class DroneRos1Bridge:
                 "success": False,
                 "error": "ROS service %s is unavailable" % self.service_names[key],
             }
-        timeout = self.limits.service_timeout_s
+        timeout = self.limits.service_call_timeout_s
         future = self._service_executor.submit(self.proxies[key], **kwargs)
         try:
             response = future.result(timeout=timeout)
@@ -229,7 +229,7 @@ class DroneRos1Bridge:
         # tool call is stuck inside a service call that never returned (see
         # the executor/timeout in _call()). Bound the wait instead of
         # deadlocking every future command behind one stuck call.
-        lock_timeout = self.limits.service_timeout_s + 2.0
+        lock_timeout = self.limits.service_call_timeout_s + 2.0
         if not self.lock.acquire(timeout=lock_timeout):
             return {
                 "success": False,

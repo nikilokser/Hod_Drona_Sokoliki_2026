@@ -1,0 +1,37 @@
+--- a/ros1_ws/src/drone_agent_mcp_ros1/src/drone_agent_mcp_ros1/drone_ros_bridge.py
++++ b/ros1_ws/src/drone_agent_mcp_ros1/src/drone_agent_mcp_ros1/drone_ros_bridge.py
+@@ -172,7 +172,7 @@
+                 "success": False,
+                 "error": "ROS service %s is unavailable" % self.service_names[key],
+             }
+-        timeout = self.limits.service_timeout_s
++        timeout = self.limits.service_call_timeout_s
+         future = self._service_executor.submit(self.proxies[key], **kwargs)
+         try:
+             response = future.result(timeout=timeout)
+@@ -229,7 +229,7 @@
+         # tool call is stuck inside a service call that never returned (see
+         # the executor/timeout in _call()). Bound the wait instead of
+         # deadlocking every future command behind one stuck call.
+-        lock_timeout = self.limits.service_timeout_s + 2.0
++        lock_timeout = self.limits.service_call_timeout_s + 2.0
+         if not self.lock.acquire(timeout=lock_timeout):
+             return {
+                 "success": False,
+--- a/ros1_ws/src/drone_agent_mcp_ros1/src/drone_agent_mcp_ros1/safety.py
++++ b/ros1_ws/src/drone_agent_mcp_ros1/src/drone_agent_mcp_ros1/safety.py
+@@ -42,6 +42,14 @@
+         self.arrival_tolerance_m = env_float("DRONE_ARRIVAL_TOLERANCE_M", 0.25)
+         self.navigation_timeout_s = env_float("DRONE_NAVIGATION_TIMEOUT_SEC", 60.0)
+         self.service_timeout_s = env_float("DRONE_SERVICE_TIMEOUT_SEC", 5.0)
++        # Bound for waiting on an actual service call's *response* (e.g. land,
++        # navigate). This is deliberately separate from service_timeout_s
++        # above, which only bounds rospy.wait_for_service() - checking that a
++        # service is registered, a near-instant operation. The call itself
++        # can legitimately take longer under real flight load (observed:
++        # `land` responding in >5s on real hardware), so it needs its own,
++        # more generous budget.
++        self.service_call_timeout_s = env_float("DRONE_SERVICE_CALL_TIMEOUT_S", 20.0)
+         self.min_takeoff_voltage_v = env_float("DRONE_MIN_TAKEOFF_VOLTAGE_V", 0.0)
+         self.require_connected = env_bool("DRONE_REQUIRE_CONNECTED", True)
+         self.allowed_frames = {
