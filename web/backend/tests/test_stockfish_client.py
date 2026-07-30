@@ -88,3 +88,39 @@ async def test_get_best_move_engine_error_does_not_raise(monkeypatch):
     result = await stockfish_client.get_best_move(board, "white")
 
     assert result["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_best_move_rejects_board_without_both_kings(monkeypatch):
+    fake_engine = MagicMock()
+    fake_engine.play = AsyncMock()
+    monkeypatch.setattr(stockfish_client, "_engine", fake_engine)
+
+    board = initial_board("white", BINDINGS)
+    del board["e1"]  # white king captured via manual drag-and-drop
+
+    result = await stockfish_client.get_best_move(board, "white")
+
+    assert result["ok"] is False
+    assert "королю" in result["error"]
+    fake_engine.play.assert_not_called()
+
+
+def test_apply_analysis_result_changes_and_signals_broadcast():
+    app_state = {}
+    changed = stockfish_client.apply_analysis_result(app_state, {"from": "e2", "to": "e4"})
+    assert changed is True
+    assert app_state["stockfish_analysis"] == {"from": "e2", "to": "e4"}
+
+
+def test_apply_analysis_result_no_change_when_identical():
+    app_state = {"stockfish_analysis": {"from": "e2", "to": "e4"}}
+    changed = stockfish_client.apply_analysis_result(app_state, {"from": "e2", "to": "e4"})
+    assert changed is False
+
+
+def test_apply_analysis_result_handles_none():
+    app_state = {"stockfish_analysis": {"from": "e2", "to": "e4"}}
+    changed = stockfish_client.apply_analysis_result(app_state, None)
+    assert changed is True
+    assert app_state["stockfish_analysis"] is None

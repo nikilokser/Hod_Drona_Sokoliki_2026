@@ -196,22 +196,11 @@ def test_side_to_move_manual_override(client):
     assert app_module.app_state["side_to_move"] == "black"
 
 
-def test_stockfish_best_move_rejected_when_disabled(client):
-    with patch("app.get_best_move") as mock_get_best_move:
-        response = client.get("/api/stockfish/best-move")
-    assert response.status_code == 403
-    mock_get_best_move.assert_not_called()
-
-
-def test_stockfish_enable_then_best_move_calls_engine(client):
-    client.post("/api/stockfish/enable", json={"enabled": True})
-    fake_result = {"ok": True, "from": "e2", "to": "e4", "score": 30}
-
-    async def fake_get_best_move(board, side_to_move):
-        return fake_result
-
-    with patch("app.get_best_move", side_effect=fake_get_best_move):
-        response = client.get("/api/stockfish/best-move")
-
+def test_stockfish_enable_toggles_flag(client):
+    response = client.post("/api/stockfish/enable", json={"enabled": True})
     assert response.status_code == 200
-    assert response.json() == fake_result
+    assert app_module.app_state["stockfish_enabled"] is True
+
+    response = client.post("/api/stockfish/enable", json={"enabled": False})
+    assert response.status_code == 200
+    assert app_module.app_state["stockfish_enabled"] is False

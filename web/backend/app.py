@@ -12,7 +12,7 @@ from chat_feed import load_chat_events, run_chat_feed
 from gateway_client import get_robots, send_chat_message, send_fly_command
 from match_clock import mark_turn_done, start_match
 from state import ALL_ROLES, apply_move, initial_board, rebind_role
-from stockfish_client import get_best_move, start_engine, stop_engine
+from stockfish_client import run_continuous_analysis, start_engine, stop_engine
 from ws_manager import ConnectionManager
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
@@ -20,12 +20,14 @@ FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(run_chat_feed(app_state, manager.broadcast))
+    chat_task = asyncio.create_task(run_chat_feed(app_state, manager.broadcast))
     await start_engine()
+    analysis_task = asyncio.create_task(run_continuous_analysis(app_state, manager.broadcast))
     try:
         yield
     finally:
-        task.cancel()
+        chat_task.cancel()
+        analysis_task.cancel()
         await stop_engine()
 
 
@@ -47,6 +49,7 @@ app_state: dict = {
     },
     "side_to_move": "white",
     "stockfish_enabled": False,
+    "stockfish_analysis": None,
 }
 
 
@@ -188,14 +191,6 @@ async def set_stockfish_enabled(payload: StockfishEnableRequest) -> dict:
     app_state["stockfish_enabled"] = payload.enabled
     await manager.broadcast(app_state)
     return app_state
-
-
-@app.get("/api/stockfish/best-move")
-async def stockfish_best_move() -> dict:
-    if not app_state["stockfish_enabled"]:
-        raise HTTPException(status_code=403, detail="Stockfish выключен")
-
-    return await get_best_move(app_state["board"], app_state["side_to_move"])
 
 
 @app.websocket("/ws")

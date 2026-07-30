@@ -12,8 +12,10 @@ not on PATH.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from typing import Awaitable, Callable
 
 import chess
 import chess.engine
@@ -34,6 +36,12 @@ PIECE_TO_FEN = {
 }
 
 _engine: chess.engine.UciProtocol | None = None
+
+
+def _has_one_king_per_side(board: dict) -> bool:
+    white_kings = sum(1 for p in board.values() if p["color"] == "white" and p["piece"] == "king")
+    black_kings = sum(1 for p in board.values() if p["color"] == "black" and p["piece"] == "king")
+    return white_kings == 1 and black_kings == 1
 
 
 def board_to_fen(board: dict, side_to_move: str) -> str:
@@ -89,6 +97,11 @@ async def get_best_move(
     if _engine is None:
         return {"ok": False, "error": "Stockfish не установлен или не запущен"}
 
+    if not _has_one_king_per_side(board):
+        # Manual drag-and-drop can capture any piece, including a king -
+        # feeding that position to the engine produces nonsense/errors.
+        return {"ok": False, "error": "На доске должно быть по одному королю каждого цвета"}
+
     fen = board_to_fen(board, side_to_move)
     try:
         chess_board = chess.Board(fen)
@@ -117,3 +130,42 @@ async def get_best_move(
         "to": chess.square_name(result.move.to_square),
         "score": score,
     }
+
+
+CONTINUOUS_MOVETIME_MS = 500
+DISABLED_POLL_INTERVAL_SEC = 0.5
+
+
+def apply_analysis_result(app_state: dict, result: dict | None) -> bool:
+    """Updates app_state["stockfish_analysis"] if it actually changed.
+    Returns True when it changed (caller should broadcast)."""
+
+    if result == app_state.get("stockfish_analysis"):
+        return False
+    app_state["stockfish_analysis"] = result
+    return True
+
+
+async def run_continuous_analysis(
+    app_state: dict, broadcast: Callable[[dict], Awaitable[None]]
+) -> None:
+    """Background task: while stockfish_enabled is on, keeps re-analysing
+    the current position for whoever is on move and pushing updates.
+    Each analysis call already takes ~CONTINUOUS_MOVETIME_MS, so that
+    paces the loop naturally - no extra sleep needed while enabled."""
+
+    while True:
+        if app_state.get("stockfish_enabled"):
+            result = await get_best_move(
+                app_state["board"],
+                app_state["side_to_move"],
+                movetime_ms=CONTINUOUS_MOVETIME_MS,
+            )
+        else:
+            result = None
+
+        if apply_analysis_result(app_state, result):
+            await broadcast(app_state)
+
+        if result is None:
+            await asyncio.sleep(DISABLED_POLL_INTERVAL_SEC)

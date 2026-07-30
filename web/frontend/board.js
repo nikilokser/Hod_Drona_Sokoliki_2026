@@ -57,7 +57,6 @@ const matchStartButton = document.getElementById("match-start-button");
 const turnDoneButton = document.getElementById("turn-done-button");
 const sideToMoveSelect = document.getElementById("side-to-move-select");
 const stockfishToggle = document.getElementById("stockfish-toggle");
-const stockfishRefreshButton = document.getElementById("stockfish-refresh-button");
 const stockfishResultEl = document.getElementById("stockfish-result");
 
 const MOVE_LIMIT_SEC = 5 * 60;
@@ -155,11 +154,21 @@ function render(state) {
 function renderAnalysisPanel(state) {
   sideToMoveSelect.value = state.side_to_move;
   stockfishToggle.checked = state.stockfish_enabled;
-  stockfishRefreshButton.disabled = !state.stockfish_enabled;
+
+  const analysis = state.stockfish_enabled ? state.stockfish_analysis : null;
+  lastAnalysis = analysis && analysis.ok ? analysis : null;
 
   if (!state.stockfish_enabled) {
-    lastAnalysis = null;
     stockfishResultEl.textContent = "";
+  } else if (!analysis) {
+    stockfishResultEl.textContent = "Анализирую…";
+  } else if (!analysis.ok) {
+    stockfishResultEl.textContent = analysis.error || "Ошибка анализа";
+  } else {
+    const scoreText = analysis.score === null || analysis.score === undefined
+      ? ""
+      : ` (оценка: ${(analysis.score / 100).toFixed(2)})`;
+    stockfishResultEl.textContent = `Рекомендация: ${analysis.from} → ${analysis.to}${scoreText}`;
   }
 
   drawAnalysisArrow();
@@ -219,28 +228,6 @@ async function apiSetStockfishEnabled(enabled) {
   });
 }
 
-async function refreshStockfishAnalysis() {
-  try {
-    const response = await fetch("/api/stockfish/best-move");
-    const body = await response.json();
-    if (!response.ok || !body.ok) {
-      lastAnalysis = null;
-      stockfishResultEl.textContent = "";
-      showMessage(body.error || body.detail || "Не удалось получить рекомендацию", "error");
-      drawAnalysisArrow();
-      return;
-    }
-    lastAnalysis = { from: body.from, to: body.to, score: body.score };
-    const scoreText = body.score === null || body.score === undefined
-      ? ""
-      : ` (оценка: ${(body.score / 100).toFixed(2)})`;
-    stockfishResultEl.textContent = `Рекомендация: ${body.from} → ${body.to}${scoreText}`;
-    drawAnalysisArrow();
-  } catch (err) {
-    showMessage(`Сетевая ошибка: ${err}`, "error");
-  }
-}
-
 sideToMoveSelect.addEventListener("change", () => apiSetSideToMove(sideToMoveSelect.value));
 
 stockfishToggle.addEventListener("change", async () => {
@@ -256,8 +243,6 @@ stockfishToggle.addEventListener("change", async () => {
   }
   apiSetStockfishEnabled(stockfishToggle.checked);
 });
-
-stockfishRefreshButton.addEventListener("click", () => refreshStockfishAnalysis());
 
 function renderClockPanel(state) {
   const clock = state.match_clock;
