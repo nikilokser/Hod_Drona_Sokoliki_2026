@@ -47,6 +47,7 @@ const confirmOverlay = document.getElementById("confirm-overlay");
 const confirmText = document.getElementById("confirm-text");
 const confirmOkButton = document.getElementById("confirm-ok");
 const confirmCancelButton = document.getElementById("confirm-cancel");
+const chatFeed = document.getElementById("chat-feed");
 
 let currentState = null;
 let latestRobots = [];
@@ -131,6 +132,39 @@ function render(state) {
   }
 
   renderBindingsPanel(state);
+  renderChatFeed(state);
+}
+
+function renderChatFeed(state) {
+  chatFeed.innerHTML = "";
+  const events = state.chat_events || [];
+
+  for (const event of events) {
+    const bubble = document.createElement("div");
+    bubble.className = `chat-event ${event.direction || "system"}`;
+
+    if (event.direction === "system") {
+      bubble.textContent = `${formatEventTime(event.timestamp)} · ${event.text || event.event_type}`;
+    } else {
+      const meta = document.createElement("span");
+      meta.className = "chat-event-meta";
+      const who = event.robot_id || event.sender || "";
+      meta.textContent = `${formatEventTime(event.timestamp)} · ${who}`;
+      bubble.appendChild(meta);
+      bubble.appendChild(document.createTextNode(event.text || ""));
+    }
+
+    chatFeed.appendChild(bubble);
+  }
+
+  chatFeed.scrollTop = chatFeed.scrollHeight;
+}
+
+function formatEventTime(timestamp) {
+  if (!timestamp) return "";
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString("ru-RU", { hour12: false });
 }
 
 function renderBindingsPanel(state) {

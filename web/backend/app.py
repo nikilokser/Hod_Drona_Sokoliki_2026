@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -6,13 +8,24 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from bindings import load_bindings, save_bindings
+from chat_feed import load_chat_events, run_chat_feed
 from gateway_client import get_robots, send_fly_command
 from state import ALL_ROLES, apply_move, initial_board, rebind_role
 from ws_manager import ConnectionManager
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(run_chat_feed(app_state, manager.broadcast))
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+app = FastAPI(lifespan=lifespan)
 manager = ConnectionManager()
 
 _initial_bindings = load_bindings()
@@ -21,6 +34,7 @@ app_state: dict = {
     "mode": "view",
     "our_color": "white",
     "bindings": _initial_bindings,
+    "chat_events": load_chat_events(),
 }
 
 
