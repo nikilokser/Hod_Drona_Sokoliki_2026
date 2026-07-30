@@ -133,3 +133,22 @@ def test_reset_keeps_current_our_color(client):
     assert response.status_code == 200
     assert app_module.app_state["board"]["e8"]["piece"] == "king"
     assert app_module.app_state["our_color"] == "black"
+
+
+def test_chat_send_proxies_to_gateway(client):
+    with patch(
+        "app.send_chat_message", return_value={"ok": True, "response": {}}
+    ) as mock_send:
+        response = client.post("/api/chat/send", json={"text": "@rover_01 статус"})
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "response": {}}
+    mock_send.assert_called_once_with("@rover_01 статус")
+
+
+def test_chat_send_surfaces_gateway_error(client):
+    with patch(
+        "app.send_chat_message", return_value={"ok": False, "error": "timeout"}
+    ):
+        response = client.post("/api/chat/send", json={"text": "@rover_01 статус"})
+    assert response.status_code == 200
+    assert response.json()["ok"] is False

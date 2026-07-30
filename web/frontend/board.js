@@ -48,6 +48,8 @@ const confirmText = document.getElementById("confirm-text");
 const confirmOkButton = document.getElementById("confirm-ok");
 const confirmCancelButton = document.getElementById("confirm-cancel");
 const chatFeed = document.getElementById("chat-feed");
+const chatSendForm = document.getElementById("chat-send-form");
+const chatSendInput = document.getElementById("chat-send-input");
 
 let currentState = null;
 let latestRobots = [];
@@ -387,6 +389,15 @@ async function apiResetBoard() {
   await fetch("/api/reset", { method: "POST" });
 }
 
+async function apiSendChatMessage(text) {
+  const response = await fetch("/api/chat/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  return response.json();
+}
+
 modeSelect.addEventListener("change", () => apiSetMode(modeSelect.value));
 colorSelect.addEventListener("change", () => apiSetColor(colorSelect.value));
 resetButton.addEventListener("click", async () => {
@@ -394,6 +405,19 @@ resetButton.addEventListener("click", async () => {
     "Сбросить поле в стартовую позицию? Текущее состояние партии на доске будет потеряно."
   );
   if (confirmed) apiResetBoard();
+});
+
+chatSendForm.addEventListener("submit", async (evt) => {
+  evt.preventDefault();
+  const text = chatSendInput.value.trim();
+  if (!text) return;
+
+  const result = await apiSendChatMessage(text);
+  if (result.ok) {
+    chatSendInput.value = "";
+  } else {
+    showMessage(`Не удалось отправить сообщение: ${result.error}`, "error");
+  }
 });
 
 function connectWebSocket() {

@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from bindings import load_bindings, save_bindings
 from chat_feed import load_chat_events, run_chat_feed
-from gateway_client import get_robots, send_fly_command
+from gateway_client import get_robots, send_chat_message, send_fly_command
 from state import ALL_ROLES, apply_move, initial_board, rebind_role
 from ws_manager import ConnectionManager
 
@@ -131,6 +131,15 @@ async def move(body: dict) -> dict:
 
     await manager.broadcast(app_state)
     return {"state": app_state, "result": result}
+
+
+class ChatSendRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/chat/send")
+async def send_chat(payload: ChatSendRequest) -> dict:
+    return send_chat_message(payload.text)
 
 
 @app.websocket("/ws")

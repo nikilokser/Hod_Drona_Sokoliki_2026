@@ -149,6 +149,27 @@ select {
   padding: 2px 6px;
 }
 
+.chat-send-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.chat-send-form input {
+  flex: 1;
+  min-width: 0;
+  background: #2a2f3d;
+  color: var(--panel-fg);
+  border: 1px solid #3a4152;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+}
+
+.chat-send-form button {
+  flex-shrink: 0;
+}
+
 #board {
   display: block;
   background: var(--dark-square);
