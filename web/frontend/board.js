@@ -72,19 +72,25 @@ let latestRobots = [];
 let gatewayOk = false;
 let drag = null; // {square, group, pointerId, offsetX, offsetY}
 let lastAnalysis = null; // {from, to, score} - redrawn as an arrow after every render()
+// Flipped so our own side is always nearest the viewer at the bottom -
+// matches where the operator physically stands next to the real field.
+let boardFlipped = false;
 
 function squareToXY(square) {
   const file = FILES.indexOf(square[0]);
   const rank = parseInt(square[1], 10);
-  return { x: file * CELL, y: (8 - rank) * CELL };
+  const col = boardFlipped ? 7 - file : file;
+  const row = boardFlipped ? rank - 1 : 8 - rank;
+  return { x: col * CELL, y: row * CELL };
 }
 
 function xyToSquare(x, y) {
-  let file = Math.floor(x / CELL);
-  let rankFromTop = Math.floor(y / CELL);
-  file = Math.max(0, Math.min(7, file));
-  rankFromTop = Math.max(0, Math.min(7, rankFromTop));
-  const rank = 8 - rankFromTop;
+  let col = Math.floor(x / CELL);
+  let row = Math.floor(y / CELL);
+  col = Math.max(0, Math.min(7, col));
+  row = Math.max(0, Math.min(7, row));
+  const file = boardFlipped ? 7 - col : col;
+  const rank = boardFlipped ? row + 1 : 8 - row;
   return `${FILES[file]}${rank}`;
 }
 
@@ -126,6 +132,7 @@ function clearMessage() {
 
 function render(state) {
   currentState = state;
+  boardFlipped = state.our_color === "black";
   modeSelect.value = state.mode;
   colorSelect.value = state.our_color;
 
@@ -512,19 +519,20 @@ async function refreshRobots() {
 }
 
 function renderLabels() {
-  for (let rankFromTop = 0; rankFromTop < 8; rankFromTop++) {
-    const rank = 8 - rankFromTop;
+  for (let row = 0; row < 8; row++) {
+    const rank = boardFlipped ? row + 1 : 8 - row;
     const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
     label.setAttribute("x", LEFT_MARGIN / 2);
-    label.setAttribute("y", rankFromTop * CELL + CELL / 2);
+    label.setAttribute("y", row * CELL + CELL / 2);
     label.setAttribute("class", "board-label");
     label.textContent = rank;
     svg.appendChild(label);
   }
 
-  for (let file = 0; file < 8; file++) {
+  for (let col = 0; col < 8; col++) {
+    const file = boardFlipped ? 7 - col : col;
     const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    label.setAttribute("x", LEFT_MARGIN + file * CELL + CELL / 2);
+    label.setAttribute("x", LEFT_MARGIN + col * CELL + CELL / 2);
     label.setAttribute("y", CELL * 8 + BOTTOM_MARGIN / 2);
     label.setAttribute("class", "board-label");
     label.textContent = FILES[file];
