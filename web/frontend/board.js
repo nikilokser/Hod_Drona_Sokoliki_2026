@@ -55,6 +55,10 @@ const clockMoveEl = document.getElementById("clock-move");
 const clockMatchEl = document.getElementById("clock-match");
 const matchStartButton = document.getElementById("match-start-button");
 const turnDoneButton = document.getElementById("turn-done-button");
+const sideToMoveSelect = document.getElementById("side-to-move-select");
+const stockfishToggle = document.getElementById("stockfish-toggle");
+const stockfishRefreshButton = document.getElementById("stockfish-refresh-button");
+const stockfishResultEl = document.getElementById("stockfish-result");
 
 const MOVE_LIMIT_SEC = 5 * 60;
 const MATCH_LIMIT_SEC = 2 * 60 * 60;
@@ -63,6 +67,7 @@ let currentState = null;
 let latestRobots = [];
 let gatewayOk = false;
 let drag = null; // {square, group, pointerId, offsetX, offsetY}
+let lastAnalysis = null; // {from, to, score} - redrawn as an arrow after every render()
 
 function squareToXY(square) {
   const file = FILES.indexOf(square[0]);
@@ -144,7 +149,115 @@ function render(state) {
   renderBindingsPanel(state);
   renderChatFeed(state);
   renderClockPanel(state);
+  renderAnalysisPanel(state);
 }
+
+function renderAnalysisPanel(state) {
+  sideToMoveSelect.value = state.side_to_move;
+  stockfishToggle.checked = state.stockfish_enabled;
+  stockfishRefreshButton.disabled = !state.stockfish_enabled;
+
+  if (!state.stockfish_enabled) {
+    lastAnalysis = null;
+    stockfishResultEl.textContent = "";
+  }
+
+  drawAnalysisArrow();
+}
+
+function drawAnalysisArrow() {
+  const existing = svg.querySelectorAll(".analysis-arrow, .analysis-arrow-head");
+  existing.forEach((el) => el.remove());
+
+  if (!lastAnalysis) return;
+
+  const from = squareToXY(lastAnalysis.from);
+  const to = squareToXY(lastAnalysis.to);
+  const x1 = LEFT_MARGIN + from.x + CELL / 2;
+  const y1 = from.y + CELL / 2;
+  const x2 = LEFT_MARGIN + to.x + CELL / 2;
+  const y2 = to.y + CELL / 2;
+
+  const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  line.setAttribute("x1", x1);
+  line.setAttribute("y1", y1);
+  line.setAttribute("x2", x2);
+  line.setAttribute("y2", y2);
+  line.setAttribute("class", "analysis-arrow");
+  svg.appendChild(line);
+
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  const headLength = 10;
+  const headWidth = 7;
+  const tipX = x2 - Math.cos(angle) * (CELL / 2 - 6);
+  const tipY = y2 - Math.sin(angle) * (CELL / 2 - 6);
+  const baseX = tipX - headLength * Math.cos(angle);
+  const baseY = tipY - headLength * Math.sin(angle);
+  const p1 = `${tipX},${tipY}`;
+  const p2 = `${baseX + headWidth * Math.sin(angle)},${baseY - headWidth * Math.cos(angle)}`;
+  const p3 = `${baseX - headWidth * Math.sin(angle)},${baseY + headWidth * Math.cos(angle)}`;
+
+  const head = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+  head.setAttribute("points", `${p1} ${p2} ${p3}`);
+  head.setAttribute("class", "analysis-arrow-head");
+  svg.appendChild(head);
+}
+
+async function apiSetSideToMove(color) {
+  await fetch("/api/side-to-move", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ color }),
+  });
+}
+
+async function apiSetStockfishEnabled(enabled) {
+  await fetch("/api/stockfish/enable", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+async function refreshStockfishAnalysis() {
+  try {
+    const response = await fetch("/api/stockfish/best-move");
+    const body = await response.json();
+    if (!response.ok || !body.ok) {
+      lastAnalysis = null;
+      stockfishResultEl.textContent = "";
+      showMessage(body.error || body.detail || "Не удалось получить рекомендацию", "error");
+      drawAnalysisArrow();
+      return;
+    }
+    lastAnalysis = { from: body.from, to: body.to, score: body.score };
+    const scoreText = body.score === null || body.score === undefined
+      ? ""
+      : ` (оценка: ${(body.score / 100).toFixed(2)})`;
+    stockfishResultEl.textContent = `Рекомендация: ${body.from} → ${body.to}${scoreText}`;
+    drawAnalysisArrow();
+  } catch (err) {
+    showMessage(`Сетевая ошибка: ${err}`, "error");
+  }
+}
+
+sideToMoveSelect.addEventListener("change", () => apiSetSideToMove(sideToMoveSelect.value));
+
+stockfishToggle.addEventListener("change", async () => {
+  if (stockfishToggle.checked) {
+    const confirmed = await confirmDialog(
+      "Регламент запрещает использование шахматных движков для выбора хода во время зачётного матча. " +
+      "Включить подсказку Stockfish только для анализа/тренировки?"
+    );
+    if (!confirmed) {
+      stockfishToggle.checked = false;
+      return;
+    }
+  }
+  apiSetStockfishEnabled(stockfishToggle.checked);
+});
+
+stockfishRefreshButton.addEventListener("click", () => refreshStockfishAnalysis());
 
 function renderClockPanel(state) {
   const clock = state.match_clock;

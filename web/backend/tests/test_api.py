@@ -28,6 +28,8 @@ def reset_state(monkeypatch):
         "active_color": None,
         "move_started_at": None,
     }
+    app_module.app_state["side_to_move"] = "white"
+    app_module.app_state["stockfish_enabled"] = False
     yield
 
 
@@ -179,3 +181,37 @@ def test_turn_done_flips_active_color(client):
     response = client.post("/api/match/turn-done")
     assert response.status_code == 200
     assert app_module.app_state["match_clock"]["active_color"] == "black"
+
+
+def test_move_auto_updates_side_to_move(client):
+    client.post("/api/mode", json={"mode": "correct"})
+    response = client.post("/api/move", json={"from": "e2", "to": "e4"})
+    assert response.status_code == 200
+    assert app_module.app_state["side_to_move"] == "black"
+
+
+def test_side_to_move_manual_override(client):
+    response = client.post("/api/side-to-move", json={"color": "black"})
+    assert response.status_code == 200
+    assert app_module.app_state["side_to_move"] == "black"
+
+
+def test_stockfish_best_move_rejected_when_disabled(client):
+    with patch("app.get_best_move") as mock_get_best_move:
+        response = client.get("/api/stockfish/best-move")
+    assert response.status_code == 403
+    mock_get_best_move.assert_not_called()
+
+
+def test_stockfish_enable_then_best_move_calls_engine(client):
+    client.post("/api/stockfish/enable", json={"enabled": True})
+    fake_result = {"ok": True, "from": "e2", "to": "e4", "score": 30}
+
+    async def fake_get_best_move(board, side_to_move):
+        return fake_result
+
+    with patch("app.get_best_move", side_effect=fake_get_best_move):
+        response = client.get("/api/stockfish/best-move")
+
+    assert response.status_code == 200
+    assert response.json() == fake_result

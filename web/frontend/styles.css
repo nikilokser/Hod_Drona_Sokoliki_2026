@@ -291,6 +291,39 @@ select {
   gap: 10px;
 }
 
+.analysis-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 20px;
+  background: var(--panel-bg);
+  border-radius: 12px;
+  padding: 12px 20px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.analysis-arrow {
+  stroke: #e8963e;
+  stroke-width: 4px;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.analysis-arrow-head {
+  fill: #e8963e;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
 .bindings-panel summary {
   cursor: pointer;
   padding: 10px 0;

@@ -48,6 +48,26 @@
       </div>
     </div>
 
+    <div class="analysis-panel">
+      <div class="toolbar-group">
+        <span class="toolbar-label">Чей ход</span>
+        <select id="side-to-move-select">
+          <option value="white">Белые</option>
+          <option value="black">Чёрные</option>
+        </select>
+      </div>
+      <div class="toolbar-group">
+        <label class="toggle-label">
+          <input type="checkbox" id="stockfish-toggle" />
+          Stockfish (анализ)
+        </label>
+      </div>
+      <div class="toolbar-group">
+        <button id="stockfish-refresh-button" type="button" disabled>Обновить рекомендацию</button>
+      </div>
+      <div class="toolbar-group status" id="stockfish-result"></div>
+    </div>
+
     <details class="bindings-panel" open>
       <summary>Привязка роботов</summary>
       <div id="bindings-list" class="bindings-list"></div>
