@@ -1,9 +1,11 @@
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from match_clock import mark_turn_done, start_match
+from match_clock import end_match, mark_turn_done, pause_match, resume_match, start_match
 
 
 def test_start_match_sets_running_state():
@@ -38,3 +40,54 @@ def test_mark_turn_done_flips_color_from_black():
     once = mark_turn_done(clock)
     twice = mark_turn_done(once)
     assert twice["active_color"] == "white"
+
+
+def test_pause_match_freezes_clock():
+    clock = start_match()
+    paused = pause_match(clock)
+    assert paused["status"] == "paused"
+    assert paused["frozen_at"] is not None
+    assert paused["match_started_at"] == clock["match_started_at"]
+    assert paused["move_started_at"] == clock["move_started_at"]
+
+
+def test_resume_match_shifts_timestamps_forward_by_pause_duration():
+    clock = start_match()
+    paused = pause_match(clock)
+    time.sleep(0.05)
+    resumed = resume_match(paused)
+
+    assert resumed["status"] == "running"
+    assert resumed["frozen_at"] is None
+
+    original_match_start = datetime.fromisoformat(clock["match_started_at"])
+    new_match_start = datetime.fromisoformat(resumed["match_started_at"])
+    shift = (new_match_start - original_match_start).total_seconds()
+    assert shift > 0  # shifted forward by (roughly) the pause duration
+
+    original_move_start = datetime.fromisoformat(clock["move_started_at"])
+    new_move_start = datetime.fromisoformat(resumed["move_started_at"])
+    move_shift = (new_move_start - original_move_start).total_seconds()
+    assert move_shift > 0
+
+
+def test_resume_preserves_active_color():
+    clock = start_match()
+    clock = mark_turn_done(clock)  # black to move
+    paused = pause_match(clock)
+    resumed = resume_match(paused)
+    assert resumed["active_color"] == "black"
+
+
+def test_end_match_marks_finished_and_freezes():
+    clock = start_match()
+    ended = end_match(clock)
+    assert ended["status"] == "finished"
+    assert ended["frozen_at"] is not None
+
+
+def test_end_match_from_paused():
+    clock = start_match()
+    paused = pause_match(clock)
+    ended = end_match(paused)
+    assert ended["status"] == "finished"

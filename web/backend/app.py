@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from bindings import load_bindings, save_bindings
 from chat_feed import load_chat_events, run_chat_feed
 from gateway_client import get_robots, send_chat_message, send_fly_command
-from match_clock import mark_turn_done, start_match
+from match_clock import end_match, mark_turn_done, pause_match, resume_match, start_match
 from state import ALL_ROLES, apply_move, initial_board, rebind_role
 from stockfish_client import run_continuous_analysis, start_engine, stop_engine
 from ws_manager import ConnectionManager
@@ -46,6 +46,7 @@ app_state: dict = {
         "match_started_at": None,
         "active_color": None,
         "move_started_at": None,
+        "frozen_at": None,
     },
     "side_to_move": "white",
     "stockfish_enabled": False,
@@ -171,6 +172,36 @@ async def turn_done() -> dict:
         raise HTTPException(status_code=400, detail="матч ещё не начат")
 
     app_state["match_clock"] = mark_turn_done(app_state["match_clock"])
+    await manager.broadcast(app_state)
+    return app_state
+
+
+@app.post("/api/match/pause")
+async def pause_match_clock() -> dict:
+    if app_state["match_clock"]["status"] != "running":
+        raise HTTPException(status_code=400, detail="матч сейчас не идёт")
+
+    app_state["match_clock"] = pause_match(app_state["match_clock"])
+    await manager.broadcast(app_state)
+    return app_state
+
+
+@app.post("/api/match/resume")
+async def resume_match_clock() -> dict:
+    if app_state["match_clock"]["status"] != "paused":
+        raise HTTPException(status_code=400, detail="матч не на паузе")
+
+    app_state["match_clock"] = resume_match(app_state["match_clock"])
+    await manager.broadcast(app_state)
+    return app_state
+
+
+@app.post("/api/match/end")
+async def end_match_clock() -> dict:
+    if app_state["match_clock"]["status"] not in ("running", "paused"):
+        raise HTTPException(status_code=400, detail="матч не идёт")
+
+    app_state["match_clock"] = end_match(app_state["match_clock"])
     await manager.broadcast(app_state)
     return app_state
 

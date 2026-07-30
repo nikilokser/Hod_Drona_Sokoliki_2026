@@ -27,6 +27,7 @@ def reset_state(monkeypatch):
         "match_started_at": None,
         "active_color": None,
         "move_started_at": None,
+        "frozen_at": None,
     }
     app_module.app_state["side_to_move"] = "white"
     app_module.app_state["stockfish_enabled"] = False
@@ -181,6 +182,53 @@ def test_turn_done_flips_active_color(client):
     response = client.post("/api/match/turn-done")
     assert response.status_code == 200
     assert app_module.app_state["match_clock"]["active_color"] == "black"
+
+
+def test_pause_rejected_before_match_start(client):
+    response = client.post("/api/match/pause")
+    assert response.status_code == 400
+
+
+def test_pause_then_turn_done_rejected(client):
+    client.post("/api/match/start")
+    client.post("/api/match/pause")
+    assert app_module.app_state["match_clock"]["status"] == "paused"
+
+    response = client.post("/api/match/turn-done")
+    assert response.status_code == 400
+
+
+def test_resume_rejected_when_not_paused(client):
+    client.post("/api/match/start")
+    response = client.post("/api/match/resume")
+    assert response.status_code == 400
+
+
+def test_pause_then_resume_returns_to_running(client):
+    client.post("/api/match/start")
+    client.post("/api/match/pause")
+    response = client.post("/api/match/resume")
+    assert response.status_code == 200
+    assert app_module.app_state["match_clock"]["status"] == "running"
+
+
+def test_end_match_rejected_when_idle(client):
+    response = client.post("/api/match/end")
+    assert response.status_code == 400
+
+
+def test_end_match_from_running(client):
+    client.post("/api/match/start")
+    response = client.post("/api/match/end")
+    assert response.status_code == 200
+    assert app_module.app_state["match_clock"]["status"] == "finished"
+
+
+def test_turn_done_rejected_after_match_end(client):
+    client.post("/api/match/start")
+    client.post("/api/match/end")
+    response = client.post("/api/match/turn-done")
+    assert response.status_code == 400
 
 
 def test_move_auto_updates_side_to_move(client):

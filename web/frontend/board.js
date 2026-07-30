@@ -55,6 +55,8 @@ const clockMoveEl = document.getElementById("clock-move");
 const clockMatchEl = document.getElementById("clock-match");
 const matchStartButton = document.getElementById("match-start-button");
 const turnDoneButton = document.getElementById("turn-done-button");
+const matchPauseButton = document.getElementById("match-pause-button");
+const matchEndButton = document.getElementById("match-end-button");
 const sideToMoveSelect = document.getElementById("side-to-move-select");
 const stockfishToggle = document.getElementById("stockfish-toggle");
 const stockfishResultEl = document.getElementById("stockfish-result");
@@ -244,19 +246,29 @@ stockfishToggle.addEventListener("change", async () => {
   apiSetStockfishEnabled(stockfishToggle.checked);
 });
 
+const CLOCK_STATUS_LABELS = {
+  idle: "Матч не начат",
+  paused: "Матч на паузе",
+  finished: "Матч завершён",
+};
+
 function renderClockPanel(state) {
   const clock = state.match_clock;
-  const running = clock.status === "running";
 
-  if (!running) {
-    clockTurnEl.textContent = "Матч не начат";
-  } else {
+  if (clock.status === "running") {
     const whoLabel = clock.active_color === state.our_color ? "наш ход" : "ход соперника";
     const colorLabel = clock.active_color === "white" ? "Белые" : "Чёрные";
     clockTurnEl.textContent = `Ход: ${colorLabel} (${whoLabel})`;
+  } else {
+    clockTurnEl.textContent = CLOCK_STATUS_LABELS[clock.status];
   }
 
-  turnDoneButton.disabled = !running;
+  const canPauseOrResume = clock.status === "running" || clock.status === "paused";
+  turnDoneButton.disabled = clock.status !== "running";
+  matchPauseButton.disabled = !canPauseOrResume;
+  matchPauseButton.textContent = clock.status === "paused" ? "Продолжить" : "Пауза";
+  matchEndButton.disabled = !canPauseOrResume;
+
   tickClocks(); // update the numbers immediately instead of waiting up to 1s
 }
 
@@ -275,7 +287,7 @@ function tickClocks() {
   if (!currentState) return;
   const clock = currentState.match_clock;
 
-  if (clock.status !== "running") {
+  if (clock.status === "idle") {
     clockMoveEl.textContent = formatDuration(MOVE_LIMIT_SEC);
     clockMatchEl.textContent = formatDuration(MATCH_LIMIT_SEC);
     clockMoveEl.classList.remove("overtime");
@@ -283,9 +295,14 @@ function tickClocks() {
     return;
   }
 
-  const now = Date.now();
-  const moveElapsed = (now - new Date(clock.move_started_at).getTime()) / 1000;
-  const matchElapsed = (now - new Date(clock.match_started_at).getTime()) / 1000;
+  // Paused/finished: freeze the display at the moment it stopped instead
+  // of the live clock, using the same "reference - started_at" math.
+  const referenceNow = clock.status === "running"
+    ? Date.now()
+    : new Date(clock.frozen_at).getTime();
+
+  const moveElapsed = (referenceNow - new Date(clock.move_started_at).getTime()) / 1000;
+  const matchElapsed = (referenceNow - new Date(clock.match_started_at).getTime()) / 1000;
   const moveRemaining = MOVE_LIMIT_SEC - moveElapsed;
   const matchRemaining = MATCH_LIMIT_SEC - matchElapsed;
 
@@ -307,8 +324,32 @@ async function apiTurnDone() {
   }
 }
 
+async function apiPauseMatch() {
+  const response = await fetch("/api/match/pause", { method: "POST" });
+  if (!response.ok) {
+    const body = await response.json();
+    showMessage(body.detail || "Не удалось поставить матч на паузу", "error");
+  }
+}
+
+async function apiResumeMatch() {
+  const response = await fetch("/api/match/resume", { method: "POST" });
+  if (!response.ok) {
+    const body = await response.json();
+    showMessage(body.detail || "Не удалось возобновить матч", "error");
+  }
+}
+
+async function apiEndMatch() {
+  const response = await fetch("/api/match/end", { method: "POST" });
+  if (!response.ok) {
+    const body = await response.json();
+    showMessage(body.detail || "Не удалось завершить матч", "error");
+  }
+}
+
 matchStartButton.addEventListener("click", async () => {
-  if (currentState && currentState.match_clock.status === "running") {
+  if (currentState && currentState.match_clock.status !== "idle") {
     const confirmed = await confirmDialog(
       "Начать матч заново? Текущие часы хода и матча будут сброшены."
     );
@@ -318,6 +359,21 @@ matchStartButton.addEventListener("click", async () => {
 });
 
 turnDoneButton.addEventListener("click", () => apiTurnDone());
+
+matchPauseButton.addEventListener("click", () => {
+  if (currentState && currentState.match_clock.status === "paused") {
+    apiResumeMatch();
+  } else {
+    apiPauseMatch();
+  }
+});
+
+matchEndButton.addEventListener("click", async () => {
+  const confirmed = await confirmDialog(
+    "Досрочно завершить матч? Часы остановятся; чтобы начать заново, потребуется нажать «Старт матча»."
+  );
+  if (confirmed) apiEndMatch();
+});
 
 setInterval(tickClocks, 1000);
 
