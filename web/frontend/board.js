@@ -126,6 +126,23 @@ function render(state) {
   modeSelect.value = state.mode;
   colorSelect.value = state.our_color;
 
+  renderBindingsPanel(state);
+  renderChatFeed(state);
+  renderClockPanel(state);
+  renderAnalysisPanel(state);
+
+  if (drag) {
+    // A drag gesture is in progress on the board - rebuilding the SVG now
+    // would remove the dragged element mid-gesture (destroying its pointer
+    // capture and event listeners) and abort the drag. The board catches up
+    // to the latest state once the gesture ends (see onPointerUp).
+    return;
+  }
+
+  renderBoard(state);
+}
+
+function renderBoard(state) {
   svg.innerHTML = "";
 
   for (let rankFromTop = 0; rankFromTop < 8; rankFromTop++) {
@@ -147,10 +164,7 @@ function render(state) {
     svg.appendChild(renderPiece(square, piece, state));
   }
 
-  renderBindingsPanel(state);
-  renderChatFeed(state);
-  renderClockPanel(state);
-  renderAnalysisPanel(state);
+  drawAnalysisArrow();
 }
 
 function renderAnalysisPanel(state) {
