@@ -53,15 +53,62 @@ def append_chat_event(event: dict, path: Path = DEFAULT_CHAT_HISTORY_PATH) -> No
         f.write("\n")
 
 
+def _is_duplicate_publish(events: list[dict], event: dict) -> bool:
+    """The Gateway has a known bug where it sometimes publishes the exact
+    same event twice under two different event_ids (same dispatch_id,
+    same text, ~1ms apart) - not something in our control to fix upstream.
+    Catch specifically that: same dispatch_id + event_type + direction +
+    text as an event we already have. Requiring an exact text match (not
+    just dispatch_id) is what keeps this from swallowing legitimate
+    distinct status updates that share a dispatch_id with their
+    originating command."""
+
+    dispatch_id = event.get("dispatch_id")
+    if not dispatch_id:
+        return False
+
+    return any(
+        e.get("dispatch_id") == dispatch_id
+        and e.get("event_type") == event.get("event_type")
+        and e.get("direction") == event.get("direction")
+        and e.get("text") == event.get("text")
+        for e in events
+    )
+
+
+def dedupe_events(events: list[dict]) -> list[dict]:
+    """One-time cleanup for events already loaded from history/disk -
+    applies the same rules as merge_event so Gateway duplicate-publishes
+    recorded before this fix existed don't linger in the UI. Does not
+    touch the on-disk log (kept as the untouched historical record)."""
+
+    deduped: list[dict] = []
+    seen_ids: set[str] = set()
+    for event in events:
+        event_id = event.get("event_id")
+        if event_id is not None and event_id in seen_ids:
+            continue
+        if _is_duplicate_publish(deduped, event):
+            continue
+        if event_id is not None:
+            seen_ids.add(event_id)
+        deduped.append(event)
+    return deduped
+
+
 def merge_event(
     app_state: dict, event: dict, path: Path = DEFAULT_CHAT_HISTORY_PATH
 ) -> bool:
     """Add event to app_state["chat_events"] and to disk unless its
-    event_id is already known. Returns True if the event was new."""
+    event_id is already known, or it's a duplicate Gateway publish of an
+    event we already have (see _is_duplicate_publish). Returns True if
+    the event was newly added."""
 
     events = app_state.setdefault("chat_events", [])
     event_id = event.get("event_id")
     if event_id is not None and any(e.get("event_id") == event_id for e in events):
+        return False
+    if _is_duplicate_publish(events, event):
         return False
 
     events.append(event)

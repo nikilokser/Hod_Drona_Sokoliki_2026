@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from bindings import load_bindings, save_bindings
-from chat_feed import load_chat_events, run_chat_feed
+from chat_feed import dedupe_events, load_chat_events, run_chat_feed
 from gateway_client import get_robots, send_chat_message, send_fly_command
 from match_clock import end_match, mark_turn_done, pause_match, resume_match, start_match
 from state import ALL_ROLES, apply_move, initial_board, rebind_role
@@ -40,7 +40,7 @@ app_state: dict = {
     "mode": "view",
     "our_color": "white",
     "bindings": _initial_bindings,
-    "chat_events": load_chat_events(),
+    "chat_events": dedupe_events(load_chat_events()),
     "match_clock": {
         "status": "idle",
         "match_started_at": None,

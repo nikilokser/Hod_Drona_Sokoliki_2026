@@ -34,6 +34,96 @@ def test_merge_event_deduplicates_by_event_id(tmp_path):
     assert len(chat_feed.load_chat_events(path)) == 1
 
 
+def test_merge_event_drops_gateway_duplicate_publish(tmp_path):
+    path = tmp_path / "chat_history.jsonl"
+    app_state = {}
+    first = {
+        "event_id": "aaa",
+        "dispatch_id": "d1",
+        "event_type": "command",
+        "direction": "outgoing",
+        "text": "@rover_01 статус",
+    }
+    # Same dispatch_id/type/direction/text, different event_id - exactly
+    # the Gateway's known duplicate-publish bug.
+    second = {**first, "event_id": "bbb"}
+
+    added_first = chat_feed.merge_event(app_state, first, path)
+    added_second = chat_feed.merge_event(app_state, second, path)
+
+    assert added_first is True
+    assert added_second is False
+    assert len(app_state["chat_events"]) == 1
+    assert len(chat_feed.load_chat_events(path)) == 1
+
+
+def test_merge_event_keeps_distinct_status_updates_with_same_dispatch_id(tmp_path):
+    path = tmp_path / "chat_history.jsonl"
+    app_state = {}
+    first = {
+        "event_id": "aaa",
+        "dispatch_id": "d1",
+        "event_type": "status",
+        "direction": "incoming",
+        "text": "Раунд 1: отправляю запрос к LLM",
+    }
+    second = {
+        "event_id": "bbb",
+        "dispatch_id": "d1",
+        "event_type": "status",
+        "direction": "incoming",
+        "text": "Готово, ровер доехал до клетки C1",
+    }
+
+    added_first = chat_feed.merge_event(app_state, first, path)
+    added_second = chat_feed.merge_event(app_state, second, path)
+
+    assert added_first is True
+    assert added_second is True
+    assert len(app_state["chat_events"]) == 2
+
+
+def test_merge_event_keeps_events_without_dispatch_id(tmp_path):
+    path = tmp_path / "chat_history.jsonl"
+    app_state = {}
+    event = {"event_id": "1", "event_type": "system", "direction": "system", "text": "connected"}
+
+    chat_feed.merge_event(app_state, event, path)
+    added_again = chat_feed.merge_event(
+        app_state, {**event, "event_id": "2"}, path
+    )
+
+    assert added_again is True
+    assert len(app_state["chat_events"]) == 2
+
+
+def test_dedupe_events_removes_gateway_duplicate_publish():
+    first = {
+        "event_id": "aaa",
+        "dispatch_id": "d1",
+        "event_type": "command",
+        "direction": "outgoing",
+        "text": "@rover_01 статус",
+    }
+    second = {**first, "event_id": "bbb"}
+
+    result = chat_feed.dedupe_events([first, second])
+
+    assert result == [first]
+
+
+def test_dedupe_events_keeps_distinct_events():
+    events = [
+        {"event_id": "1", "dispatch_id": "d1", "event_type": "command", "direction": "outgoing", "text": "a"},
+        {"event_id": "2", "dispatch_id": "d1", "event_type": "answer", "direction": "incoming", "text": "b"},
+        {"event_id": "3", "dispatch_id": "d2", "event_type": "command", "direction": "outgoing", "text": "a"},
+    ]
+
+    result = chat_feed.dedupe_events(events)
+
+    assert len(result) == 3
+
+
 def test_merge_event_truncates_in_memory_list(tmp_path, monkeypatch):
     monkeypatch.setattr(chat_feed, "MAX_CHAT_EVENTS_IN_MEMORY", 3)
     path = tmp_path / "chat_history.jsonl"
