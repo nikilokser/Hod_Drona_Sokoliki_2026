@@ -293,13 +293,63 @@ select {
 
 .analysis-panel {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 20px;
+  flex-direction: column;
+  gap: 12px;
   background: var(--panel-bg);
   border-radius: 12px;
   padding: 12px 20px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.analysis-panel-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 20px;
+}
+
+.eval-bar {
+  position: relative;
+  height: 20px;
+  border-radius: 6px;
+  background: #17191f;
+  overflow: hidden;
+}
+
+.eval-bar-white {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 50%;
+  background: #e8e8ec;
+  transition: width 0.3s ease;
+}
+
+.eval-bar-mid {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.eval-bar-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  text-shadow: 0 0 3px #000, 0 0 3px #000, 0 1px 2px #000;
+  pointer-events: none;
 }
 
 .toggle-label {

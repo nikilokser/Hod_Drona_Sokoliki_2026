@@ -51,20 +51,27 @@
     </div>
 
     <div class="analysis-panel">
-      <div class="toolbar-group">
-        <span class="toolbar-label">Чей ход</span>
-        <select id="side-to-move-select">
-          <option value="white">Белые</option>
-          <option value="black">Чёрные</option>
-        </select>
+      <div class="analysis-panel-row">
+        <div class="toolbar-group">
+          <span class="toolbar-label">Чей ход</span>
+          <select id="side-to-move-select">
+            <option value="white">Белые</option>
+            <option value="black">Чёрные</option>
+          </select>
+        </div>
+        <div class="toolbar-group">
+          <label class="toggle-label">
+            <input type="checkbox" id="stockfish-toggle" />
+            Stockfish (анализ)
+          </label>
+        </div>
+        <div class="toolbar-group status" id="stockfish-result"></div>
       </div>
-      <div class="toolbar-group">
-        <label class="toggle-label">
-          <input type="checkbox" id="stockfish-toggle" />
-          Stockfish (анализ)
-        </label>
+      <div class="eval-bar" id="eval-bar" hidden>
+        <div class="eval-bar-white" id="eval-bar-white"></div>
+        <div class="eval-bar-mid"></div>
+        <span class="eval-bar-label" id="eval-bar-label"></span>
       </div>
-      <div class="toolbar-group status" id="stockfish-result"></div>
     </div>
 
     <details class="bindings-panel" open>

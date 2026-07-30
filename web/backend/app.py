@@ -132,6 +132,15 @@ async def set_binding(payload: BindingRequest) -> dict:
 @app.post("/api/move")
 async def move(body: dict) -> dict:
     payload = MoveRequest.from_body(body)
+
+    if app_state["mode"] == "manual":
+        moving_piece = app_state["board"].get(payload.from_square)
+        if moving_piece and moving_piece["color"] != app_state["side_to_move"]:
+            # Manual mode dispatches real robot commands - block moving the
+            # wrong side outright instead of silently sending one. "correct"
+            # mode (unrestricted) is the escape hatch for fixing the board.
+            raise HTTPException(status_code=400, detail="Сейчас не ваш ход")
+
     new_board, result = apply_move(
         app_state["board"], app_state["mode"], payload.from_square, payload.to_square
     )

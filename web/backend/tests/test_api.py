@@ -68,10 +68,29 @@ def test_manual_mode_calls_gateway_for_bound_piece(client):
 
 def test_manual_mode_skips_gateway_for_opponent_piece(client):
     client.post("/api/mode", json={"mode": "manual"})
+    client.post("/api/side-to-move", json={"color": "black"})  # legitimately black's turn
     with patch("app.send_fly_command") as mock_send:
         response = client.post("/api/move", json={"from": "e7", "to": "e5"})
     assert response.status_code == 200
     mock_send.assert_not_called()
+
+
+def test_manual_mode_rejects_wrong_turn_move(client):
+    client.post("/api/mode", json={"mode": "manual"})
+    # default side_to_move is "white"; e7 is a black piece
+    with patch("app.send_fly_command") as mock_send:
+        response = client.post("/api/move", json={"from": "e7", "to": "e5"})
+    assert response.status_code == 400
+    assert "e7" in app_module.app_state["board"]
+    mock_send.assert_not_called()
+
+
+def test_correct_mode_allows_wrong_turn_move(client):
+    client.post("/api/mode", json={"mode": "correct"})
+    # correct mode stays unrestricted regardless of side_to_move
+    response = client.post("/api/move", json={"from": "e7", "to": "e5"})
+    assert response.status_code == 200
+    assert "e5" in app_module.app_state["board"]
 
 
 def test_manual_mode_keeps_move_on_gateway_error(client):

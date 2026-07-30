@@ -60,6 +60,9 @@ const matchEndButton = document.getElementById("match-end-button");
 const sideToMoveSelect = document.getElementById("side-to-move-select");
 const stockfishToggle = document.getElementById("stockfish-toggle");
 const stockfishResultEl = document.getElementById("stockfish-result");
+const evalBarEl = document.getElementById("eval-bar");
+const evalBarWhiteEl = document.getElementById("eval-bar-white");
+const evalBarLabelEl = document.getElementById("eval-bar-label");
 
 const MOVE_LIMIT_SEC = 5 * 60;
 const MATCH_LIMIT_SEC = 2 * 60 * 60;
@@ -187,7 +190,29 @@ function renderAnalysisPanel(state) {
     stockfishResultEl.textContent = `Рекомендация: ${analysis.from} → ${analysis.to}${scoreText}`;
   }
 
+  renderEvalBar(state.stockfish_enabled ? analysis : null);
+
   drawAnalysisArrow();
+}
+
+function scoreToWhitePercent(scoreCp) {
+  const clamped = Math.max(-1000, Math.min(1000, scoreCp));
+  // Logistic-ish curve (roughly matches how eval bars elsewhere map
+  // centipawns to a win/advantage share) rather than a plain linear scale,
+  // so it doesn't look pointlessly maxed out from a small material edge.
+  return 50 + 50 * (2 / (1 + Math.exp(-0.004 * clamped)) - 1);
+}
+
+function renderEvalBar(analysis) {
+  if (!analysis || !analysis.ok || analysis.score === null || analysis.score === undefined) {
+    evalBarEl.hidden = true;
+    return;
+  }
+
+  evalBarEl.hidden = false;
+  const percent = scoreToWhitePercent(analysis.score);
+  evalBarWhiteEl.style.width = `${percent}%`;
+  evalBarLabelEl.textContent = (analysis.score / 100).toFixed(2);
 }
 
 function drawAnalysisArrow() {
@@ -514,7 +539,12 @@ function renderPiece(square, piece, state) {
 
   const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
   group.dataset.square = square;
-  const draggable = state.mode !== "view";
+  // "manual" dispatches real robot commands, so it only allows dragging the
+  // side whose turn it currently is; "correct" stays unrestricted (the way
+  // to fix an out-of-turn/wrong position) and "view" never allows dragging.
+  const draggable =
+    state.mode === "correct" ||
+    (state.mode === "manual" && piece.color === state.side_to_move);
   group.setAttribute("class", `piece ${draggable ? "" : "disabled"}`);
 
   const isOurs = piece.color === state.our_color;
