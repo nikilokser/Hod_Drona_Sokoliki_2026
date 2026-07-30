@@ -123,6 +123,15 @@ select {
   stroke: #111;
 }
 
+.board-label {
+  font-size: 11px;
+  fill: #6b5236;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  user-select: none;
+}
+
 .ours-ring {
   fill: none;
   stroke: var(--ours-ring);

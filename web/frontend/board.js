@@ -1,5 +1,8 @@
 const CELL = 50;
 const FILES = "abcdefgh";
+const LEFT_MARGIN = 24;
+const BOTTOM_MARGIN = 24;
+const VIEWBOX_SIZE = CELL * 8 + LEFT_MARGIN; // square viewBox, margin reused on both axes
 
 const GLYPHS = {
   white: { king: "♔", queen: "♕", rook: "♖", bishop: "♗", knight: "♘", pawn: "♙" },
@@ -32,8 +35,8 @@ function xyToSquare(x, y) {
 
 function svgPoint(evt) {
   const rect = svg.getBoundingClientRect();
-  const x = ((evt.clientX - rect.left) / rect.width) * 400;
-  const y = ((evt.clientY - rect.top) / rect.height) * 400;
+  const x = ((evt.clientX - rect.left) / rect.width) * VIEWBOX_SIZE - LEFT_MARGIN;
+  const y = ((evt.clientY - rect.top) / rect.height) * VIEWBOX_SIZE;
   return { x, y };
 }
 
@@ -58,7 +61,7 @@ function render(state) {
     for (let file = 0; file < 8; file++) {
       const isLight = (file + rankFromTop) % 2 === 0;
       const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      rect.setAttribute("x", file * CELL);
+      rect.setAttribute("x", LEFT_MARGIN + file * CELL);
       rect.setAttribute("y", rankFromTop * CELL);
       rect.setAttribute("width", CELL);
       rect.setAttribute("height", CELL);
@@ -67,14 +70,37 @@ function render(state) {
     }
   }
 
+  renderLabels();
+
   for (const [square, piece] of Object.entries(state.board)) {
     svg.appendChild(renderPiece(square, piece, state));
   }
 }
 
+function renderLabels() {
+  for (let rankFromTop = 0; rankFromTop < 8; rankFromTop++) {
+    const rank = 8 - rankFromTop;
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", LEFT_MARGIN / 2);
+    label.setAttribute("y", rankFromTop * CELL + CELL / 2);
+    label.setAttribute("class", "board-label");
+    label.textContent = rank;
+    svg.appendChild(label);
+  }
+
+  for (let file = 0; file < 8; file++) {
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", LEFT_MARGIN + file * CELL + CELL / 2);
+    label.setAttribute("y", CELL * 8 + BOTTOM_MARGIN / 2);
+    label.setAttribute("class", "board-label");
+    label.textContent = FILES[file];
+    svg.appendChild(label);
+  }
+}
+
 function renderPiece(square, piece, state) {
   const { x, y } = squareToXY(square);
-  const cx = x + CELL / 2;
+  const cx = LEFT_MARGIN + x + CELL / 2;
   const cy = y + CELL / 2;
 
   const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
