@@ -204,23 +204,40 @@ def compute_quorum(app_state: dict) -> list[str]:
 
 def _collect_votes(
     quorum: list[str], fen: str, piece: str, from_sq: str, to_sq: str, reasoning: str
-) -> list[dict]:
+) -> dict:
+    """Returns {"votes": [...], "no_response": [robot_id, ...]}.
+
+    no_response lists quorum members who were asked to vote but never
+    returned a usable answer - a Gateway dispatch failure, the robot's own
+    LLM connection timing out or being unreachable, a malformed non-JSON
+    plan from its fallback planner, etc. (observed in practice for all of
+    these - see chat_history.jsonl "Ошибка агента: LLM connection error"/
+    "LLM JSON planner returned non-JSON content" entries). All of these
+    look identical from here (just a missing/unsuccessful result), but
+    surfacing *which* robot_ids didn't answer at all - as opposed to a
+    round that got real "да"/"нет" votes - is what lets an operator tell
+    "no one objected" apart from "half the quorum's LLMs are failing"."""
+
     if not quorum:
-        return []
+        return {"votes": [], "no_response": []}
 
     text = _build_vote_message(fen, piece, from_sq, to_sq, reasoning)
     dispatch = ask_robots(quorum, text, timeout_sec=VOTE_ANSWER_TIMEOUT_SEC)
     if not dispatch.get("ok"):
-        return []
+        return {"votes": [], "no_response": list(quorum)}
 
     votes = []
+    answered: set[str] = set()
     for item in dispatch["response"].get("results", []):
         if not item.get("success") or not item.get("answer"):
             continue
         parsed = parse_vote(item["answer"])
         parsed["robot_id"] = item["robot_id"]
         votes.append(parsed)
-    return votes
+        answered.add(item["robot_id"])
+
+    no_response = [robot_id for robot_id in quorum if robot_id not in answered]
+    return {"votes": votes, "no_response": no_response}
 
 
 def decide_round(votes: list[dict], board: dict, side_to_move: str) -> dict:
@@ -420,7 +437,7 @@ async def propose_and_execute_move(
             accepted_proposal = proposal
             break
 
-        votes = _collect_votes(
+        vote_result = _collect_votes(
             quorum,
             board_to_fen(app_state["board"], side_to_move),
             proposal["piece"],
@@ -428,8 +445,15 @@ async def propose_and_execute_move(
             proposal["to"],
             proposal["reasoning"],
         )
+        votes = vote_result["votes"]
         decision = decide_round(votes, app_state["board"], side_to_move)
-        attempts.append({"proposal": proposal, "votes": votes, "quorum": quorum, **decision})
+        attempts.append({
+            "proposal": proposal,
+            "votes": votes,
+            "no_response": vote_result["no_response"],
+            "quorum": quorum,
+            **decision,
+        })
         await broadcast(app_state)
 
         if decision["outcome"] == "accepted":

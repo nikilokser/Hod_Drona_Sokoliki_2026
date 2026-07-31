@@ -15,6 +15,12 @@ const PIECE_SET_STORAGE_KEY = "sokoliki-piece-set";
 const DEFAULT_PIECE_SET = "cburnett";
 let pieceSet = localStorage.getItem(PIECE_SET_STORAGE_KEY) || DEFAULT_PIECE_SET;
 
+const AUTO_MOVE_STORAGE_KEY = "sokoliki-auto-move";
+// Persisted like the piece set/theme choice - stays on across page reloads
+// so a match in progress keeps auto-playing without the operator having to
+// remember to re-enable it after e.g. a browser refresh.
+let autoMoveEnabled = localStorage.getItem(AUTO_MOVE_STORAGE_KEY) === "true";
+
 const ROLE_ORDER = [
   "king", "queen", "bishop_1", "bishop_2", "knight_1", "knight_2", "rook_1", "rook_2",
   "pawn_1", "pawn_2", "pawn_3", "pawn_4", "pawn_5", "pawn_6", "pawn_7", "pawn_8",
@@ -71,6 +77,7 @@ const evalBarEl = document.getElementById("eval-bar");
 const evalBarWhiteEl = document.getElementById("eval-bar-white");
 const evalBarLabelEl = document.getElementById("eval-bar-label");
 const proposeMoveButton = document.getElementById("propose-move-button");
+const autoMoveToggle = document.getElementById("auto-move-toggle");
 const orchestratorStatusEl = document.getElementById("orchestrator-status");
 const orchestratorLogEl = document.getElementById("orchestrator-log");
 const themeToggleButton = document.getElementById("theme-toggle-button");
@@ -413,9 +420,24 @@ function renderOrchestratorPanel(state) {
   const modeOk = state.mode === "manual" || state.mode === "view";
   const eligible = modeOk && state.side_to_move === state.our_color;
   proposeMoveButton.disabled = proposingMove || !eligible;
+  autoMoveToggle.checked = autoMoveEnabled;
   updateOrchestratorStatusText(eligible);
 
   renderOrchestratorLog(state);
+
+  // Auto-play: whenever it becomes our turn during a running match with
+  // "Автоход" on, propose a move without waiting for a manual click - this
+  // is also what makes play start immediately right after "Старт матча"
+  // (that broadcast flips eligible to true on the very next render()).
+  // Gated on the match clock actually running so auto-move doesn't start
+  // firing real strong-model calls during setup/testing before a match has
+  // been started. proposingMove itself is the re-entrancy guard - it's set
+  // synchronously at the top of apiProposeMove(), before any await, so a
+  // burst of broadcasts while a round is already in flight can't trigger a
+  // second overlapping call.
+  if (autoMoveEnabled && eligible && !proposingMove && state.match_clock.status === "running") {
+    apiProposeMove();
+  }
 }
 
 // A full round (model calls + up to 3 vote-collection timeouts) can take
@@ -476,6 +498,17 @@ function renderOrchestratorLog(state) {
       const forcedText = attempt.forced_after_regeneration_limit ? " (без консенсуса)" : "";
       line.textContent = `${proposalText} — ${outcomeText}${forcedText}`;
       card.appendChild(line);
+
+      if (attempt.no_response && attempt.no_response.length > 0) {
+        // Quorum members who were asked to vote but never returned a usable
+        // answer (LLM connection failure, malformed plan, etc. on the
+        // robot's own side) - surfaced separately from real votes so it's
+        // clear "accepted" doesn't always mean everyone actually weighed in.
+        const noResponseLine = document.createElement("div");
+        noResponseLine.className = "orchestrator-attempt orchestrator-no-response";
+        noResponseLine.textContent = `Не ответили: ${attempt.no_response.join(", ")}`;
+        card.appendChild(noResponseLine);
+      }
     }
 
     orchestratorLogEl.appendChild(card);
@@ -1200,6 +1233,15 @@ pieceSetSelect.addEventListener("change", () => {
     renderBoard(currentState); // repaint pieces with the new set immediately
     renderCapturedPanel(currentState);
   }
+});
+
+autoMoveToggle.addEventListener("change", () => {
+  autoMoveEnabled = autoMoveToggle.checked;
+  localStorage.setItem(AUTO_MOVE_STORAGE_KEY, String(autoMoveEnabled));
+  // Re-run the eligibility/auto-trigger check immediately on enabling,
+  // rather than waiting for the next broadcast - e.g. turning it on mid-
+  // match while it's already our turn should start playing right away.
+  if (currentState) renderOrchestratorPanel(currentState);
 });
 
 tabButtons.forEach((button) => {

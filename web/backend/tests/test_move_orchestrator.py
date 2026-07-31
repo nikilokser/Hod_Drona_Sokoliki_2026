@@ -222,28 +222,31 @@ def test_collect_votes_parses_and_filters_results():
         },
     }
     with patch("move_orchestrator.ask_robots", return_value=fake_dispatch) as mock_ask:
-        votes = move_orchestrator._collect_votes(
+        result = move_orchestrator._collect_votes(
             ["drone-01", "drone-02", "drone-03", "drone-04"], "fen", "knight", "g1", "f3", "развитие"
         )
 
-    assert votes == [
+    assert result["votes"] == [
         {"kind": "yes", "reason": "ок", "robot_id": "drone-01"},
         {"kind": "no", "reason": "плохо", "robot_id": "drone-04"},
     ]
+    # drone-02 (success=False) and drone-03 (no answer text) asked but never
+    # returned a usable vote - distinct from drone-01/04 who actually voted.
+    assert result["no_response"] == ["drone-02", "drone-03"]
     assert mock_ask.call_args[0][0] == ["drone-01", "drone-02", "drone-03", "drone-04"]
 
 
 def test_collect_votes_empty_quorum_skips_gateway_call():
     with patch("move_orchestrator.ask_robots") as mock_ask:
-        votes = move_orchestrator._collect_votes([], "fen", "knight", "g1", "f3", "x")
-    assert votes == []
+        result = move_orchestrator._collect_votes([], "fen", "knight", "g1", "f3", "x")
+    assert result == {"votes": [], "no_response": []}
     mock_ask.assert_not_called()
 
 
-def test_collect_votes_gateway_unreachable_returns_empty():
+def test_collect_votes_gateway_unreachable_treats_whole_quorum_as_no_response():
     with patch("move_orchestrator.ask_robots", return_value={"ok": False, "error": "down"}):
-        votes = move_orchestrator._collect_votes(["drone-01"], "fen", "knight", "g1", "f3", "x")
-    assert votes == []
+        result = move_orchestrator._collect_votes(["drone-01"], "fen", "knight", "g1", "f3", "x")
+    assert result == {"votes": [], "no_response": ["drone-01"]}
 
 
 # --- call_strong_model --------------------------------------------------------
@@ -408,7 +411,10 @@ async def test_propose_and_execute_move_accepted_all_yes(monkeypatch):
     monkeypatch.setattr(
         move_orchestrator,
         "_collect_votes",
-        lambda *args, **kwargs: [{"kind": "yes", "reason": "ок", "robot_id": "drone-06"}],
+        lambda *args, **kwargs: {
+            "votes": [{"kind": "yes", "reason": "ок", "robot_id": "drone-06"}],
+            "no_response": [],
+        },
     )
 
     with patch(
@@ -420,6 +426,39 @@ async def test_propose_and_execute_move_accepted_all_yes(monkeypatch):
     mock_send.assert_called_once_with("drone-06", "f3")
     assert app_state["board"]["f3"]["piece"] == "knight"
     assert app_state["orchestrator_log"][-1] == result["round"]
+
+
+@pytest.mark.asyncio
+async def test_propose_and_execute_move_records_no_response_robots():
+    # A quorum member whose LLM never answered (network failure, malformed
+    # plan, etc.) should be visible in the round log, not silently dropped -
+    # otherwise "accepted because nobody said no" is indistinguishable from
+    # "accepted because half the quorum's LLMs are down".
+    app_state = make_app_state()
+    with (
+        patch(
+            "move_orchestrator.call_strong_model",
+            return_value={"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
+        ),
+        patch("move_orchestrator.compute_quorum", return_value=["drone-06", "drone-05"]),
+        patch(
+            "move_orchestrator.ask_robots",
+            return_value={
+                "ok": True,
+                "response": {
+                    "results": [
+                        {"robot_id": "drone-06", "success": True, "answer": "ДА: ок"},
+                        {"robot_id": "drone-05", "success": False, "answer": None},
+                    ]
+                },
+            },
+        ),
+        patch("move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}),
+    ):
+        result = await move_orchestrator.propose_and_execute_move(app_state, _noop_broadcast)
+
+    assert result["ok"] is True
+    assert result["round"]["attempts"][0]["no_response"] == ["drone-05"]
 
 
 @pytest.mark.asyncio
@@ -470,8 +509,8 @@ async def test_propose_and_execute_move_vetoed_then_regenerated_and_accepted(mon
     monkeypatch.setattr(move_orchestrator, "compute_quorum", lambda app_state: ["drone-06"])
 
     vote_sequence = [
-        [{"kind": "no", "reason": "плохо", "robot_id": "drone-06"}],
-        [{"kind": "yes", "reason": "ок", "robot_id": "drone-06"}],
+        {"votes": [{"kind": "no", "reason": "плохо", "robot_id": "drone-06"}], "no_response": []},
+        {"votes": [{"kind": "yes", "reason": "ок", "robot_id": "drone-06"}], "no_response": []},
     ]
     monkeypatch.setattr(
         move_orchestrator, "_collect_votes", lambda *args, **kwargs: vote_sequence.pop(0)
@@ -503,11 +542,14 @@ async def test_propose_and_execute_move_escalated_alternative_feeds_back_to_mode
     monkeypatch.setattr(move_orchestrator, "compute_quorum", lambda app_state: ["drone-05", "drone-06"])
 
     vote_sequence = [
-        [
-            {"kind": "move", "move": {"from": "b1", "to": "c3"}, "reason": "центр", "robot_id": "drone-05"},
-            {"kind": "move", "move": {"from": "b1", "to": "c3"}, "reason": "центр", "robot_id": "drone-06"},
-        ],
-        [{"kind": "yes", "reason": "ок", "robot_id": "drone-05"}],
+        {
+            "votes": [
+                {"kind": "move", "move": {"from": "b1", "to": "c3"}, "reason": "центр", "robot_id": "drone-05"},
+                {"kind": "move", "move": {"from": "b1", "to": "c3"}, "reason": "центр", "robot_id": "drone-06"},
+            ],
+            "no_response": [],
+        },
+        {"votes": [{"kind": "yes", "reason": "ок", "robot_id": "drone-05"}], "no_response": []},
     ]
     monkeypatch.setattr(
         move_orchestrator, "_collect_votes", lambda *args, **kwargs: vote_sequence.pop(0)
@@ -535,7 +577,10 @@ async def test_propose_and_execute_move_forced_after_regeneration_limit(monkeypa
     monkeypatch.setattr(
         move_orchestrator,
         "_collect_votes",
-        lambda *args, **kwargs: [{"kind": "no", "reason": "всегда плохо", "robot_id": "drone-06"}],
+        lambda *args, **kwargs: {
+            "votes": [{"kind": "no", "reason": "всегда плохо", "robot_id": "drone-06"}],
+            "no_response": [],
+        },
     )
 
     with patch("move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}):

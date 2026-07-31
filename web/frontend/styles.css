@@ -741,6 +741,10 @@ select {
   line-height: 1.4;
 }
 
+.orchestrator-no-response {
+  color: var(--danger);
+}
+
 /* Robot alerts - a dispatched move whose robot went offline before we ever
    heard back from it (see chat_feed.check_pending_robot_move). Deliberately
    separate from .message-bar: those are single-slot and get overwritten by
