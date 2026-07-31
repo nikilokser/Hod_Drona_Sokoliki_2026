@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -28,6 +29,12 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_CHAT_HISTORY_PATH = Path(__file__).parent / "config" / "chat_history.jsonl"
 MAX_CHAT_EVENTS_IN_MEMORY = 1000
 RECONNECT_DELAY_SEC = 3
+# The Gateway's duplicate-publish bug fires the second copy ~1ms after the
+# first - a few seconds is generous slack for clock/serialization jitter
+# while staying far below the minutes/hours between legitimately-repeated
+# identical events (e.g. the same "Команда получена pseudo-agent." status
+# text recurring for a robot on every future dispatch).
+DUPLICATE_PUBLISH_WINDOW_SEC = 5
 
 
 def load_chat_events(path: Path = DEFAULT_CHAT_HISTORY_PATH) -> list[dict]:
@@ -54,27 +61,67 @@ def append_chat_event(event: dict, path: Path = DEFAULT_CHAT_HISTORY_PATH) -> No
         f.write("\n")
 
 
+def _parse_timestamp(event: dict) -> datetime | None:
+    ts = event.get("timestamp")
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 def _is_duplicate_publish(events: list[dict], event: dict) -> bool:
     """The Gateway has a known bug where it sometimes publishes the exact
     same event twice under two different event_ids (same dispatch_id,
     same text, ~1ms apart) - not something in our control to fix upstream.
-    Catch specifically that: same dispatch_id + event_type + direction +
-    text as an event we already have. Requiring an exact text match (not
-    just dispatch_id) is what keeps this from swallowing legitimate
-    distinct status updates that share a dispatch_id with their
-    originating command."""
+
+    For events carrying a dispatch_id (command/answer/error), match on
+    dispatch_id + event_type + direction + text as an event we already
+    have - requiring an exact text match is what keeps this from
+    swallowing legitimate distinct status updates that share a
+    dispatch_id with their originating command.
+
+    Events without a dispatch_id (status/availability/system) get no
+    dispatch_id to key on, but are just as susceptible to the same
+    Gateway bug (e.g. a free-text chat message or an "offline" ping
+    republished under a fresh event_id ~1ms later) - for those, match on
+    event_type + direction + text + robot_id *within a tight time
+    window* instead. The time window matters: identical status text like
+    "Команда получена pseudo-agent." legitimately recurs for the same
+    robot many times over a match (once per dispatch, minutes/hours
+    apart) - only a near-instant repeat is the publish bug, not a
+    same-text-eventually-again."""
 
     dispatch_id = event.get("dispatch_id")
-    if not dispatch_id:
+    if dispatch_id:
+        return any(
+            e.get("dispatch_id") == dispatch_id
+            and e.get("event_type") == event.get("event_type")
+            and e.get("direction") == event.get("direction")
+            and e.get("text") == event.get("text")
+            for e in events
+        )
+
+    event_ts = _parse_timestamp(event)
+    if event_ts is None:
         return False
 
-    return any(
-        e.get("dispatch_id") == dispatch_id
-        and e.get("event_type") == event.get("event_type")
-        and e.get("direction") == event.get("direction")
-        and e.get("text") == event.get("text")
-        for e in events
-    )
+    for e in events:
+        if e.get("dispatch_id"):
+            continue
+        if (
+            e.get("event_type") != event.get("event_type")
+            or e.get("direction") != event.get("direction")
+            or e.get("text") != event.get("text")
+            or e.get("robot_id") != event.get("robot_id")
+        ):
+            continue
+        e_ts = _parse_timestamp(e)
+        if e_ts is not None and abs((event_ts - e_ts).total_seconds()) <= DUPLICATE_PUBLISH_WINDOW_SEC:
+            return True
+
+    return False
 
 
 def dedupe_events(events: list[dict]) -> list[dict]:

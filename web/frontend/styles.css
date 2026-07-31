@@ -414,6 +414,10 @@ select {
   stroke-width: 0.4;
 }
 
+.piece-icon-notch {
+  stroke-width: 1.4;
+}
+
 .board-label {
   font-size: 11px;
   fill: #6b5236;

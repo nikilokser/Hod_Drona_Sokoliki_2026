@@ -13,57 +13,92 @@ const PIECE_ICON_VIEWBOX = 45;
 
 const PIECE_SHAPES = {
   pawn: [
-    { tag: "rect", attrs: { x: 13, y: 36, width: 19, height: 5, rx: 2 } },
-    { tag: "polygon", attrs: { points: "16,36 29,36 25,22 20,22" } },
-    { tag: "ellipse", attrs: { cx: 22.5, cy: 21, rx: 5, ry: 2 } },
-    { tag: "circle", attrs: { cx: 22.5, cy: 13, r: 7 } },
+    { tag: "rect", attrs: { x: 11, y: 37, width: 23, height: 4, rx: 2 } },
+    { tag: "rect", attrs: { x: 13, y: 34, width: 19, height: 3, rx: 1.5 } },
+    { tag: "path", attrs: { d: "M19,19 C15,23 14,29 16,34 L29,34 C31,29 30,23 26,19 Z" } },
+    { tag: "ellipse", attrs: { cx: 22.5, cy: 18.5, rx: 4.2, ry: 1.8 } },
+    { tag: "circle", attrs: { cx: 22.5, cy: 12, r: 6.5 } },
   ],
   rook: [
-    { tag: "rect", attrs: { x: 9, y: 36, width: 27, height: 5, rx: 1 } },
-    { tag: "polygon", attrs: { points: "13,36 32,36 29,17 16,17" } },
-    { tag: "rect", attrs: { x: 14, y: 12, width: 17, height: 5, rx: 1 } },
+    { tag: "rect", attrs: { x: 11, y: 37, width: 23, height: 4, rx: 2 } },
+    { tag: "rect", attrs: { x: 13, y: 34, width: 19, height: 3, rx: 1 } },
+    { tag: "path", attrs: { d: "M16,34 C15,29 15,24 17,20 L28,20 C30,24 30,29 29,34 Z" } },
+    { tag: "rect", attrs: { x: 15, y: 16, width: 15, height: 4, rx: 1 } },
+    { tag: "rect", attrs: { x: 14, y: 12, width: 17, height: 4, rx: 1 } },
     { tag: "rect", attrs: { x: 14, y: 6, width: 4, height: 6 } },
     { tag: "rect", attrs: { x: 20.5, y: 6, width: 4, height: 6 } },
     { tag: "rect", attrs: { x: 27, y: 6, width: 4, height: 6 } },
   ],
   bishop: [
-    { tag: "rect", attrs: { x: 12, y: 36, width: 21, height: 5, rx: 2 } },
-    { tag: "ellipse", attrs: { cx: 22.5, cy: 25, rx: 8, ry: 13 } },
-    { tag: "rect", attrs: { x: 19, y: 14, width: 7, height: 5, rx: 1 } },
-    { tag: "circle", attrs: { cx: 22.5, cy: 10, r: 6 } },
-    { tag: "circle", attrs: { cx: 22.5, cy: 3.5, r: 2.2 } },
-  ],
-  knight: [
-    { tag: "rect", attrs: { x: 11, y: 36, width: 23, height: 5, rx: 2 } },
+    { tag: "rect", attrs: { x: 12, y: 37, width: 21, height: 4, rx: 2 } },
+    { tag: "rect", attrs: { x: 14, y: 34, width: 17, height: 3, rx: 1 } },
     {
       tag: "path",
       attrs: {
-        d: "M 13,41 L 13,30 C 13,23 16,18 21,15 L 17,13 C 15.5,12.2 15.5,10.2 17,9.5 " +
-          "C 20,8 23.5,8 26,9.5 L 33,14 C 36,16 37.5,19.5 37.5,23 L 37.5,26 " +
-          "C 37.5,27.2 36.5,28 35.5,27.5 L 33,26 L 33,30 C 33,31 32,31.5 31.2,30.8 " +
-          "L 28,28 C 26,29.5 24,30 22,30 L 24,41 Z",
+        d: "M22.5,12 C26.5,12 28,16 27,20 C29,24 29,29 27,34 L18,34 " +
+          "C16,29 16,24 18,20 C17,16 18.5,12 22.5,12 Z",
       },
     },
-    { tag: "circle", attrs: { cx: 20, cy: 12.5, r: 1.1 } },
+    // The traditional diagonal mitre cut - a stroke-only line, so it just
+    // inherits the piece's outline color/width variant, see .piece-icon-notch.
+    { tag: "line", attrs: { x1: 18, y1: 16, x2: 27, y2: 14, class: "piece-icon-notch" } },
+    { tag: "polygon", attrs: { points: "22.5,4 25.5,10.5 19.5,10.5" } },
+    { tag: "circle", attrs: { cx: 22.5, cy: 2.4, r: 1.7 } },
+  ],
+  // Deliberately low-poly (straight edges only, no bezier curves) - much
+  // more predictable to get looking intentional than a hand-tuned curved
+  // path; verified by rendering it standalone and comparing against the
+  // rest of the set before wiring it in here.
+  knight: [
+    { tag: "rect", attrs: { x: 11, y: 37, width: 23, height: 4, rx: 2 } },
+    { tag: "rect", attrs: { x: 13, y: 34, width: 19, height: 3, rx: 1 } },
+    {
+      tag: "path",
+      attrs: {
+        d: "M30,34 C30,28 29,22 27,18 C29,15 30,11 30,8 L24,7 C22,9 21,11 21,12 " +
+          "L24,14 L20,15 C17,13 13,13 9,15 C11,17 13,19 15,20 L20,19 " +
+          "C18,23 17,27 17,31 L17,34 Z",
+      },
+    },
+    { tag: "circle", attrs: { cx: 22, cy: 13, r: 1.1 } },
   ],
   queen: [
-    { tag: "rect", attrs: { x: 10, y: 36, width: 25, height: 5, rx: 2 } },
-    { tag: "ellipse", attrs: { cx: 22.5, cy: 25, rx: 9, ry: 12 } },
-    { tag: "rect", attrs: { x: 17, y: 15, width: 11, height: 5, rx: 1 } },
-    { tag: "polygon", attrs: { points: "14,15 31,15 29,9 16,9" } },
-    { tag: "circle", attrs: { cx: 14, cy: 7, r: 2.2 } },
-    { tag: "circle", attrs: { cx: 18.25, cy: 6, r: 2.2 } },
-    { tag: "circle", attrs: { cx: 22.5, cy: 5.5, r: 2.2 } },
-    { tag: "circle", attrs: { cx: 26.75, cy: 6, r: 2.2 } },
-    { tag: "circle", attrs: { cx: 31, cy: 7, r: 2.2 } },
+    { tag: "rect", attrs: { x: 10, y: 37, width: 25, height: 4, rx: 2 } },
+    { tag: "rect", attrs: { x: 13, y: 34, width: 19, height: 3, rx: 1.5 } },
+    {
+      tag: "path",
+      attrs: {
+        d: "M17,34 C15,29 16,24 19,21 C17,18 18,15 22.5,15 C27,15 28,18 26,21 " +
+          "C29,24 30,29 28,34 Z",
+      },
+    },
+    { tag: "rect", attrs: { x: 16, y: 13, width: 13, height: 3, rx: 1.5 } },
+    { tag: "polygon", attrs: { points: "15,13 30,13 27.5,7 17.5,7" } },
+    { tag: "polygon", attrs: { points: "16.3,7 18.7,7 17.5,4" } },
+    { tag: "polygon", attrs: { points: "18.8,7 21.2,7 20,2.5" } },
+    { tag: "polygon", attrs: { points: "21.3,7 23.7,7 22.5,1.5" } },
+    { tag: "polygon", attrs: { points: "23.8,7 26.2,7 25,2.5" } },
+    { tag: "polygon", attrs: { points: "26.3,7 28.7,7 27.5,4" } },
+    { tag: "circle", attrs: { cx: 17.5, cy: 4, r: 1.3 } },
+    { tag: "circle", attrs: { cx: 20, cy: 2.5, r: 1.3 } },
+    { tag: "circle", attrs: { cx: 22.5, cy: 1.5, r: 1.3 } },
+    { tag: "circle", attrs: { cx: 25, cy: 2.5, r: 1.3 } },
+    { tag: "circle", attrs: { cx: 27.5, cy: 4, r: 1.3 } },
   ],
   king: [
-    { tag: "rect", attrs: { x: 10, y: 36, width: 25, height: 5, rx: 2 } },
-    { tag: "ellipse", attrs: { cx: 22.5, cy: 25, rx: 9, ry: 12 } },
-    { tag: "rect", attrs: { x: 17, y: 15, width: 11, height: 5, rx: 1 } },
-    { tag: "polygon", attrs: { points: "15,15 30,15 28,10 17,10" } },
-    { tag: "rect", attrs: { x: 20.5, y: 1, width: 4, height: 9, rx: 1 } },
-    { tag: "rect", attrs: { x: 17.5, y: 3.5, width: 10, height: 4, rx: 1 } },
+    { tag: "rect", attrs: { x: 10, y: 37, width: 25, height: 4, rx: 2 } },
+    { tag: "rect", attrs: { x: 13, y: 34, width: 19, height: 3, rx: 1.5 } },
+    {
+      tag: "path",
+      attrs: {
+        d: "M17,34 C15,29 16,24 19,21 C17,18 18,15 22.5,15 C27,15 28,18 26,21 " +
+          "C29,24 30,29 28,34 Z",
+      },
+    },
+    { tag: "rect", attrs: { x: 16, y: 13, width: 13, height: 3, rx: 1.5 } },
+    { tag: "polygon", attrs: { points: "15,13 30,13 28,8 17,8" } },
+    { tag: "rect", attrs: { x: 20.5, y: 1, width: 4, height: 7 } },
+    { tag: "rect", attrs: { x: 17.5, y: 3, width: 10, height: 3 } },
   ],
 };
 

@@ -97,6 +97,82 @@ def test_merge_event_keeps_events_without_dispatch_id(tmp_path):
     assert len(app_state["chat_events"]) == 2
 
 
+def test_merge_event_drops_near_instant_duplicate_without_dispatch_id(tmp_path):
+    # Reproduces the Gateway's duplicate-publish bug for events that don't
+    # carry a dispatch_id (availability/status/plain chat) - the same
+    # content republished ~1ms later under a fresh event_id.
+    path = tmp_path / "chat_history.jsonl"
+    app_state = {}
+    first = {
+        "event_id": "aaa",
+        "event_type": "availability",
+        "direction": "system",
+        "robot_id": "sverk-8",
+        "text": "offline",
+        "timestamp": "2026-07-31T12:00:00.000000Z",
+    }
+    second = {**first, "event_id": "bbb", "timestamp": "2026-07-31T12:00:00.032000Z"}
+
+    added_first = chat_feed.merge_event(app_state, first, path)
+    added_second = chat_feed.merge_event(app_state, second, path)
+
+    assert added_first is True
+    assert added_second is False
+    assert len(app_state["chat_events"]) == 1
+
+
+def test_merge_event_keeps_same_text_far_apart_without_dispatch_id(tmp_path):
+    # A robot legitimately recurring status ("Команда получена") repeats the
+    # exact same text on every future dispatch, hours apart - must not be
+    # mistaken for the near-instant Gateway duplicate-publish bug.
+    path = tmp_path / "chat_history.jsonl"
+    app_state = {}
+    first = {
+        "event_id": "aaa",
+        "event_type": "status",
+        "direction": "incoming",
+        "robot_id": "sverk-108",
+        "text": "Команда получена pseudo-agent.",
+        "timestamp": "2026-07-30T15:46:04.812285Z",
+    }
+    second = {
+        **first,
+        "event_id": "bbb",
+        "timestamp": "2026-07-30T16:00:58.047947Z",
+    }
+
+    added_first = chat_feed.merge_event(app_state, first, path)
+    added_second = chat_feed.merge_event(app_state, second, path)
+
+    assert added_first is True
+    assert added_second is True
+    assert len(app_state["chat_events"]) == 2
+
+
+def test_merge_event_keeps_near_instant_same_text_different_robot(tmp_path):
+    # Two different robots going offline at nearly the same moment are
+    # distinct events, not a duplicate publish of one - robot_id must be
+    # part of the match, not just event_type/direction/text.
+    path = tmp_path / "chat_history.jsonl"
+    app_state = {}
+    first = {
+        "event_id": "aaa",
+        "event_type": "availability",
+        "direction": "system",
+        "robot_id": "sverk-8",
+        "text": "offline",
+        "timestamp": "2026-07-31T12:00:00.000000Z",
+    }
+    second = {**first, "event_id": "bbb", "robot_id": "sverk-108"}
+
+    added_first = chat_feed.merge_event(app_state, first, path)
+    added_second = chat_feed.merge_event(app_state, second, path)
+
+    assert added_first is True
+    assert added_second is True
+    assert len(app_state["chat_events"]) == 2
+
+
 def test_dedupe_events_removes_gateway_duplicate_publish():
     first = {
         "event_id": "aaa",
@@ -110,6 +186,38 @@ def test_dedupe_events_removes_gateway_duplicate_publish():
     result = chat_feed.dedupe_events([first, second])
 
     assert result == [first]
+
+
+def test_dedupe_events_removes_near_instant_duplicate_without_dispatch_id():
+    first = {
+        "event_id": "aaa",
+        "event_type": "availability",
+        "direction": "system",
+        "robot_id": "sverk-8",
+        "text": "offline",
+        "timestamp": "2026-07-31T12:00:00.000000Z",
+    }
+    second = {**first, "event_id": "bbb", "timestamp": "2026-07-31T12:00:00.032000Z"}
+
+    result = chat_feed.dedupe_events([first, second])
+
+    assert result == [first]
+
+
+def test_dedupe_events_keeps_same_text_far_apart_without_dispatch_id():
+    first = {
+        "event_id": "aaa",
+        "event_type": "status",
+        "direction": "incoming",
+        "robot_id": "sverk-108",
+        "text": "Команда получена pseudo-agent.",
+        "timestamp": "2026-07-30T15:46:04.812285Z",
+    }
+    second = {**first, "event_id": "bbb", "timestamp": "2026-07-30T16:00:58.047947Z"}
+
+    result = chat_feed.dedupe_events([first, second])
+
+    assert len(result) == 2
 
 
 def test_dedupe_events_keeps_distinct_events():
