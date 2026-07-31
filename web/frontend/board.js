@@ -287,12 +287,20 @@ function renderCapturedRow(container, pieces) {
     (a, b) => CAPTURED_SORT_ORDER.indexOf(a.piece) - CAPTURED_SORT_ORDER.indexOf(b.piece)
   );
   for (const p of sorted) {
+    // A light backdrop chip behind every icon (regardless of theme) -
+    // black piece art is solid black with no light outline of its own, so
+    // it was invisible against the dark theme's dark panel background
+    // without one.
+    const chip = document.createElement("div");
+    chip.className = "captured-piece-chip";
+
     const img = document.createElement("img");
     const colorCode = p.color === "white" ? "w" : "b";
     img.src = `/pieces/${pieceSet}/${colorCode}${PIECE_CODE[p.piece]}.svg`;
     img.alt = `${p.color} ${p.piece}`;
     img.className = "captured-piece-icon";
-    container.appendChild(img);
+    chip.appendChild(img);
+    container.appendChild(chip);
   }
 }
 

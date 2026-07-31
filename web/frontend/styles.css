@@ -295,45 +295,60 @@ select {
   margin-left: auto;
 }
 
-/* Captured-pieces tally */
+/* Captured-pieces tally - a sidebar to the left of the board, mirroring the
+   chat panel on the right. Large icons on purpose (per user request) with a
+   fixed light backdrop chip behind each: black piece art is solid black
+   fill/stroke with no light outline of its own, so on the dark theme's dark
+   --surface it was invisible without a light chip underneath - same fix
+   the physical board already has via its light/dark squares (see
+   --light-square, deliberately theme-independent). */
 
-.captured-panel {
+.captured-sidebar {
+  width: 168px;
+  max-width: 100%;
+  max-height: 678px;
+  overflow-y: auto;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 20px;
   background: var(--surface);
   border-radius: 12px;
-  padding: 8px 20px;
+  padding: 14px 16px;
   box-shadow: var(--shadow);
 }
 
-.captured-group {
+.captured-sidebar-group {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 26px;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.captured-label {
-  font-size: 0.78rem;
+.captured-sidebar-label {
+  font-size: 0.82rem;
+  font-weight: 600;
   color: var(--text-muted);
-  white-space: nowrap;
 }
 
-.captured-icons {
+.captured-sidebar-icons {
   display: flex;
   flex-wrap: wrap;
+  gap: 8px;
+}
+
+.captured-piece-chip {
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--light-square);
+  display: flex;
   align-items: center;
+  justify-content: center;
 }
 
 .captured-piece-icon {
-  width: 22px;
-  height: 22px;
-  margin-left: -4px;
-}
-
-.captured-piece-icon:first-child {
-  margin-left: 0;
+  width: 40px;
+  height: 40px;
 }
 
 /* Board + eval bar + chat row */
@@ -901,6 +916,13 @@ button:disabled:hover {
   .chat-panel {
     width: auto;
     max-height: 320px;
+  }
+
+  .captured-sidebar {
+    width: auto;
+    max-height: 160px;
+    flex-direction: row;
+    flex-wrap: wrap;
   }
 
   .clock-actions {
