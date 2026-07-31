@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -119,6 +120,51 @@ def merge_event(
     return True
 
 
+def check_pending_robot_move(app_state: dict, event: dict) -> bool:
+    """Reacts to events concerning a robot we're still waiting to hear back
+    from about a physically dispatched move (tracked in
+    app_state["pending_robot_moves"] by move_orchestrator.execute_move):
+
+    - an "availability" event reporting it went offline - the move's real
+      outcome is now unknown (it may have started flying and lost comms
+      mid-flight), so surface a clear alert instead of silently waiting
+      forever for an answer that may never arrive;
+    - an "answer" event - the robot did report back (whatever the outcome),
+      already visible as its own chat event, so just stop tracking it.
+
+    Returns True if app_state changed (caller should broadcast)."""
+
+    pending = app_state.get("pending_robot_moves")
+    if not pending:
+        return False
+
+    robot_id = event.get("robot_id")
+    if robot_id not in pending:
+        return False
+
+    if event.get("event_type") == "availability" and event.get("online") is False:
+        move = pending.pop(robot_id)
+        alert = {
+            "id": str(uuid.uuid4()),
+            "robot_id": robot_id,
+            "from": move["from"],
+            "to": move["to"],
+            "at": event.get("timestamp"),
+            "text": (
+                f"{robot_id} ушёл в оффлайн во время выполнения хода "
+                f"{move['from']} → {move['to']} — результат неизвестен"
+            ),
+        }
+        app_state.setdefault("robot_alerts", []).append(alert)
+        return True
+
+    if event.get("event_type") == "answer":
+        pending.pop(robot_id, None)
+        return True
+
+    return False
+
+
 def fetch_history(limit: int = 1000) -> list[dict]:
     try:
         response = httpx.get(
@@ -153,13 +199,18 @@ async def run_chat_feed(
             for event in fetch_history():
                 if merge_event(app_state, event):
                     changed = True
+                if check_pending_robot_move(app_state, event):
+                    changed = True
             if changed:
                 await broadcast(app_state)
 
             async with websockets.connect(ws_url) as ws:
                 async for raw in ws:
                     event = json.loads(raw)
-                    if merge_event(app_state, event):
+                    changed = merge_event(app_state, event)
+                    if check_pending_robot_move(app_state, event):
+                        changed = True
+                    if changed:
                         await broadcast(app_state)
         except (OSError, websockets.exceptions.WebSocketException, json.JSONDecodeError):
             LOGGER.info("Gateway chat feed unavailable, will retry")

@@ -4,10 +4,83 @@ const LEFT_MARGIN = 24;
 const BOTTOM_MARGIN = 24;
 const VIEWBOX_SIZE = CELL * 8 + LEFT_MARGIN; // square viewBox, margin reused on both axes
 
-const GLYPHS = {
-  white: { king: "♔", queen: "♕", rook: "♖", bishop: "♗", knight: "♘", pawn: "♙" },
-  black: { king: "♚", queen: "♛", rook: "♜", bishop: "♝", knight: "♞", pawn: "♟" },
+// Flat vector piece icons (no external assets/fonts - drawn as plain shapes
+// in a shared 45x45 local coordinate space, scaled to fit a cell at render
+// time). Deliberately simple silhouettes rather than a photorealistic
+// classic set - reliable to render crisply at any board size instead of
+// depending on how a given OS/browser happens to draw chess Unicode glyphs.
+const PIECE_ICON_VIEWBOX = 45;
+
+const PIECE_SHAPES = {
+  pawn: [
+    { tag: "rect", attrs: { x: 13, y: 36, width: 19, height: 5, rx: 2 } },
+    { tag: "polygon", attrs: { points: "16,36 29,36 25,22 20,22" } },
+    { tag: "ellipse", attrs: { cx: 22.5, cy: 21, rx: 5, ry: 2 } },
+    { tag: "circle", attrs: { cx: 22.5, cy: 13, r: 7 } },
+  ],
+  rook: [
+    { tag: "rect", attrs: { x: 9, y: 36, width: 27, height: 5, rx: 1 } },
+    { tag: "polygon", attrs: { points: "13,36 32,36 29,17 16,17" } },
+    { tag: "rect", attrs: { x: 14, y: 12, width: 17, height: 5, rx: 1 } },
+    { tag: "rect", attrs: { x: 14, y: 6, width: 4, height: 6 } },
+    { tag: "rect", attrs: { x: 20.5, y: 6, width: 4, height: 6 } },
+    { tag: "rect", attrs: { x: 27, y: 6, width: 4, height: 6 } },
+  ],
+  bishop: [
+    { tag: "rect", attrs: { x: 12, y: 36, width: 21, height: 5, rx: 2 } },
+    { tag: "ellipse", attrs: { cx: 22.5, cy: 25, rx: 8, ry: 13 } },
+    { tag: "rect", attrs: { x: 19, y: 14, width: 7, height: 5, rx: 1 } },
+    { tag: "circle", attrs: { cx: 22.5, cy: 10, r: 6 } },
+    { tag: "circle", attrs: { cx: 22.5, cy: 3.5, r: 2.2 } },
+  ],
+  knight: [
+    { tag: "rect", attrs: { x: 11, y: 36, width: 23, height: 5, rx: 2 } },
+    {
+      tag: "path",
+      attrs: {
+        d: "M 13,41 L 13,30 C 13,23 16,18 21,15 L 17,13 C 15.5,12.2 15.5,10.2 17,9.5 " +
+          "C 20,8 23.5,8 26,9.5 L 33,14 C 36,16 37.5,19.5 37.5,23 L 37.5,26 " +
+          "C 37.5,27.2 36.5,28 35.5,27.5 L 33,26 L 33,30 C 33,31 32,31.5 31.2,30.8 " +
+          "L 28,28 C 26,29.5 24,30 22,30 L 24,41 Z",
+      },
+    },
+    { tag: "circle", attrs: { cx: 20, cy: 12.5, r: 1.1 } },
+  ],
+  queen: [
+    { tag: "rect", attrs: { x: 10, y: 36, width: 25, height: 5, rx: 2 } },
+    { tag: "ellipse", attrs: { cx: 22.5, cy: 25, rx: 9, ry: 12 } },
+    { tag: "rect", attrs: { x: 17, y: 15, width: 11, height: 5, rx: 1 } },
+    { tag: "polygon", attrs: { points: "14,15 31,15 29,9 16,9" } },
+    { tag: "circle", attrs: { cx: 14, cy: 7, r: 2.2 } },
+    { tag: "circle", attrs: { cx: 18.25, cy: 6, r: 2.2 } },
+    { tag: "circle", attrs: { cx: 22.5, cy: 5.5, r: 2.2 } },
+    { tag: "circle", attrs: { cx: 26.75, cy: 6, r: 2.2 } },
+    { tag: "circle", attrs: { cx: 31, cy: 7, r: 2.2 } },
+  ],
+  king: [
+    { tag: "rect", attrs: { x: 10, y: 36, width: 25, height: 5, rx: 2 } },
+    { tag: "ellipse", attrs: { cx: 22.5, cy: 25, rx: 9, ry: 12 } },
+    { tag: "rect", attrs: { x: 17, y: 15, width: 11, height: 5, rx: 1 } },
+    { tag: "polygon", attrs: { points: "15,15 30,15 28,10 17,10" } },
+    { tag: "rect", attrs: { x: 20.5, y: 1, width: 4, height: 9, rx: 1 } },
+    { tag: "rect", attrs: { x: 17.5, y: 3.5, width: 10, height: 4, rx: 1 } },
+  ],
 };
+
+function buildPieceIcon(pieceType, colorClass) {
+  const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  group.setAttribute("class", `piece-icon ${colorClass}`);
+
+  for (const shape of PIECE_SHAPES[pieceType] || []) {
+    const el = document.createElementNS("http://www.w3.org/2000/svg", shape.tag);
+    for (const [key, value] of Object.entries(shape.attrs)) {
+      el.setAttribute(key, value);
+    }
+    group.appendChild(el);
+  }
+
+  return group;
+}
 
 const ROLE_ORDER = [
   "king", "queen", "bishop_1", "bishop_2", "knight_1", "knight_2", "rook_1", "rook_2",
@@ -68,6 +141,7 @@ const proposeMoveButton = document.getElementById("propose-move-button");
 const orchestratorStatusEl = document.getElementById("orchestrator-status");
 const orchestratorLogEl = document.getElementById("orchestrator-log");
 const themeToggleButton = document.getElementById("theme-toggle-button");
+const robotAlertsEl = document.getElementById("robot-alerts");
 const tabButtons = document.querySelectorAll(".tab-button");
 const tabPanels = document.querySelectorAll(".tab-panel");
 
@@ -158,6 +232,8 @@ function render(state) {
   renderClockPanel(state);
   renderAnalysisPanel(state);
   renderOrchestratorPanel(state);
+  renderRobotAlerts(state);
+  renderLastMoveBanner(state);
 
   if (drag) {
     // A drag gesture is in progress on the board - rebuilding the SVG now
@@ -167,7 +243,7 @@ function render(state) {
     return;
   }
 
-  const signature = JSON.stringify([state.board, state.mode, state.our_color, state.side_to_move]);
+  const signature = JSON.stringify([state.board, state.mode, state.our_color, state.side_to_move, state.last_move]);
   if (signature === lastBoardSignature) {
     // Nothing that affects the board's pieces/highlighting/draggability
     // actually changed since the last rebuild (a very frequent case: every
@@ -198,12 +274,49 @@ function renderBoard(state) {
   }
 
   renderLabels();
+  renderLastMoveHighlight(state);
 
   for (const [square, piece] of Object.entries(state.board)) {
     svg.appendChild(renderPiece(square, piece, state));
   }
 
+  drawLastMoveArrow(state);
   drawAnalysisArrow();
+}
+
+function renderLastMoveHighlight(state) {
+  if (!state.last_move) return;
+
+  for (const square of [state.last_move.from, state.last_move.to]) {
+    const { x, y } = squareToXY(square);
+    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("x", LEFT_MARGIN + x);
+    rect.setAttribute("y", y);
+    rect.setAttribute("width", CELL);
+    rect.setAttribute("height", CELL);
+    rect.setAttribute("class", "last-move-highlight");
+    svg.appendChild(rect);
+  }
+}
+
+const SQUARE_LABEL_RU = { king: "Король", queen: "Ферзь", rook: "Ладья", bishop: "Слон", knight: "Конь", pawn: "Пешка" };
+
+function renderLastMoveBanner(state) {
+  const banner = document.getElementById("last-move-banner");
+  const move = state.last_move;
+
+  if (!move) {
+    banner.hidden = true;
+    return;
+  }
+
+  const isOurs = move.color === state.our_color;
+  const pieceName = SQUARE_LABEL_RU[move.piece] || move.piece;
+  banner.hidden = false;
+  banner.classList.toggle("ours", isOurs);
+  banner.textContent = isOurs
+    ? `✓ Наш ход выполнен: ${pieceName} ${move.from} → ${move.to}`
+    : `Ход соперника: ${pieceName} ${move.from} → ${move.to}`;
 }
 
 function renderAnalysisPanel(state) {
@@ -252,14 +365,11 @@ function renderEvalBar(analysis) {
   evalBarLabelEl.textContent = (analysis.score / 100).toFixed(2);
 }
 
-function drawAnalysisArrow() {
-  const existing = svg.querySelectorAll(".analysis-arrow, .analysis-arrow-head");
-  existing.forEach((el) => el.remove());
-
-  if (!lastAnalysis) return;
-
-  const from = squareToXY(lastAnalysis.from);
-  const to = squareToXY(lastAnalysis.to);
+// Shared arrow drawing for both the actual last-move arrow and the
+// Stockfish-suggestion arrow - only the CSS variant (color) differs.
+function appendBoardArrow(fromSquare, toSquare, variant) {
+  const from = squareToXY(fromSquare);
+  const to = squareToXY(toSquare);
   const x1 = LEFT_MARGIN + from.x + CELL / 2;
   const y1 = from.y + CELL / 2;
   const x2 = LEFT_MARGIN + to.x + CELL / 2;
@@ -270,14 +380,14 @@ function drawAnalysisArrow() {
   line.setAttribute("y1", y1);
   line.setAttribute("x2", x2);
   line.setAttribute("y2", y2);
-  line.setAttribute("class", "analysis-arrow");
+  line.setAttribute("class", `board-arrow board-arrow--${variant}`);
   svg.appendChild(line);
 
   const angle = Math.atan2(y2 - y1, x2 - x1);
-  const headLength = 10;
-  const headWidth = 7;
-  const tipX = x2 - Math.cos(angle) * (CELL / 2 - 6);
-  const tipY = y2 - Math.sin(angle) * (CELL / 2 - 6);
+  const headLength = 13;
+  const headWidth = 9;
+  const tipX = x2 - Math.cos(angle) * (CELL / 2 - 8);
+  const tipY = y2 - Math.sin(angle) * (CELL / 2 - 8);
   const baseX = tipX - headLength * Math.cos(angle);
   const baseY = tipY - headLength * Math.sin(angle);
   const p1 = `${tipX},${tipY}`;
@@ -286,8 +396,20 @@ function drawAnalysisArrow() {
 
   const head = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
   head.setAttribute("points", `${p1} ${p2} ${p3}`);
-  head.setAttribute("class", "analysis-arrow-head");
+  head.setAttribute("class", `board-arrow-head board-arrow-head--${variant}`);
   svg.appendChild(head);
+}
+
+function drawLastMoveArrow(state) {
+  svg.querySelectorAll(".board-arrow--last-move, .board-arrow-head--last-move").forEach((el) => el.remove());
+  if (!state.last_move) return;
+  appendBoardArrow(state.last_move.from, state.last_move.to, "last-move");
+}
+
+function drawAnalysisArrow() {
+  svg.querySelectorAll(".board-arrow--analysis, .board-arrow-head--analysis").forEach((el) => el.remove());
+  if (!lastAnalysis) return;
+  appendBoardArrow(lastAnalysis.from, lastAnalysis.to, "analysis");
 }
 
 const ORCHESTRATOR_OUTCOME_LABELS = {
@@ -317,11 +439,19 @@ function renderOrchestratorPanel(state) {
 // both from the render() path (on every broadcast) and from its own
 // 1s interval so it keeps moving between broadcasts too.
 let proposeStartedAt = null;
+// Set only while auto-retrying after a round that ended with no move chosen
+// at all (model error / model couldn't produce a legal move) - not for a
+// round that picked a move but failed to execute it physically, and not for
+// static ineligibility errors (wrong mode/turn), see apiProposeMove().
+let proposeRetryInfo = null; // {attempt, max}
 
 function updateOrchestratorStatusText(eligible) {
   if (proposingMove) {
     const elapsed = proposeStartedAt ? Math.round((Date.now() - proposeStartedAt) / 1000) : 0;
-    orchestratorStatusEl.textContent = `Идёт согласование хода… (${elapsed} с)`;
+    const retryText = proposeRetryInfo
+      ? ` — повтор ${proposeRetryInfo.attempt}/${proposeRetryInfo.max} (ход не выбран, пробуем снова)`
+      : "";
+    orchestratorStatusEl.textContent = `Идёт согласование хода… (${elapsed} с)${retryText}`;
   } else {
     orchestratorStatusEl.textContent = eligible
       ? ""
@@ -367,24 +497,58 @@ function renderOrchestratorLog(state) {
   }
 }
 
+// Static ineligibility errors (wrong mode/wrong turn) - retrying would just
+// fail identically forever, so these are never auto-retried.
+const PROPOSE_STATIC_ERRORS = new Set([
+  "Предложение хода доступно только в режиме «Ручные ходы»",
+  "Сейчас не ваш ход",
+]);
+const MAX_PROPOSE_AUTO_RETRIES = 3;
+const PROPOSE_RETRY_DELAY_MS = 2000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function apiProposeMove() {
   proposingMove = true;
   proposeStartedAt = Date.now();
+  proposeRetryInfo = null;
   if (currentState) renderOrchestratorPanel(currentState);
 
   try {
-    const response = await fetch("/api/orchestrator/propose-move", { method: "POST" });
-    const body = await response.json();
-    if (!body.ok) {
-      showMessage(body.error || "Не удалось согласовать ход", "error");
-    } else {
-      clearMessage();
+    for (let attempt = 1; attempt <= MAX_PROPOSE_AUTO_RETRIES; attempt++) {
+      let body;
+      try {
+        const response = await fetch("/api/orchestrator/propose-move", { method: "POST" });
+        body = await response.json();
+      } catch (err) {
+        showMessage(`Сетевая ошибка: ${err}`, "error");
+        return;
+      }
+
+      if (body.ok) {
+        clearMessage();
+        return;
+      }
+
+      // "round" is only present once a move was actually chosen and taken to
+      // execution (execute_move failed) - that's a different failure mode
+      // from "no move was selected" and isn't what the user asked to retry.
+      const noMoveSelected = !body.round && !PROPOSE_STATIC_ERRORS.has(body.error);
+      if (!noMoveSelected || attempt === MAX_PROPOSE_AUTO_RETRIES) {
+        showMessage(body.error || "Не удалось согласовать ход", "error");
+        return;
+      }
+
+      proposeRetryInfo = { attempt, max: MAX_PROPOSE_AUTO_RETRIES };
+      if (currentState) renderOrchestratorPanel(currentState);
+      await sleep(PROPOSE_RETRY_DELAY_MS);
     }
-  } catch (err) {
-    showMessage(`Сетевая ошибка: ${err}`, "error");
   } finally {
     proposingMove = false;
     proposeStartedAt = null;
+    proposeRetryInfo = null;
     if (currentState) renderOrchestratorPanel(currentState);
   }
 }
@@ -562,6 +726,22 @@ setInterval(tickClocks, 1000);
 const CHAT_DISCUSSION_EVENT_TYPES = new Set(["command", "answer"]);
 let chatShowSystemEvents = false; // local-only UI filter, not persisted
 
+// Stable per-agent color, so the same robot_id/sender always gets the same
+// color across renders regardless of join order - hashed rather than
+// assigned by first-appearance so it doesn't shift as new agents join mid-match.
+const AGENT_COLOR_PALETTE = [
+  "#5b8dee", "#c26ce0", "#3ab6a0", "#e0637a",
+  "#4fb8d0", "#8f8fe0", "#d97a3f", "#6fb0e8",
+];
+
+function colorForAgent(identity) {
+  let hash = 0;
+  for (let i = 0; i < identity.length; i++) {
+    hash = (hash * 31 + identity.charCodeAt(i)) | 0;
+  }
+  return AGENT_COLOR_PALETTE[Math.abs(hash) % AGENT_COLOR_PALETTE.length];
+}
+
 function renderChatFeed(state) {
   chatFeed.innerHTML = "";
   const events = state.chat_events || [];
@@ -576,10 +756,18 @@ function renderChatFeed(state) {
     if (event.direction === "system") {
       bubble.textContent = `${formatEventTime(event.timestamp)} · ${event.text || event.event_type}`;
     } else {
+      const who = event.robot_id || event.sender || "";
+      const agentColor = who ? colorForAgent(who) : null;
+      if (agentColor) bubble.style.borderLeft = `3px solid ${agentColor}`;
+
       const meta = document.createElement("span");
       meta.className = "chat-event-meta";
-      const who = event.robot_id || event.sender || "";
-      meta.textContent = `${formatEventTime(event.timestamp)} · ${who}`;
+      meta.appendChild(document.createTextNode(`${formatEventTime(event.timestamp)} · `));
+      const agentNameEl = document.createElement("span");
+      agentNameEl.className = "chat-event-agent";
+      agentNameEl.textContent = who;
+      if (agentColor) agentNameEl.style.color = agentColor;
+      meta.appendChild(agentNameEl);
       bubble.appendChild(meta);
       bubble.appendChild(document.createTextNode(event.text || ""));
     }
@@ -595,6 +783,34 @@ function formatEventTime(timestamp) {
   const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) return "";
   return date.toLocaleTimeString("ru-RU", { hour12: false });
+}
+
+function renderRobotAlerts(state) {
+  robotAlertsEl.innerHTML = "";
+  const alerts = state.robot_alerts || [];
+
+  for (const alert of alerts) {
+    const row = document.createElement("div");
+    row.className = "robot-alert";
+
+    const text = document.createElement("span");
+    text.textContent = alert.text;
+    row.appendChild(text);
+
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "robot-alert-dismiss";
+    dismiss.setAttribute("aria-label", "Скрыть предупреждение");
+    dismiss.textContent = "✕";
+    dismiss.addEventListener("click", () => apiDismissRobotAlert(alert.id));
+    row.appendChild(dismiss);
+
+    robotAlertsEl.appendChild(row);
+  }
+}
+
+async function apiDismissRobotAlert(alertId) {
+  await fetch(`/api/robot-alerts/${alertId}/dismiss`, { method: "POST" });
 }
 
 function renderBindingsPanel(state) {
@@ -711,15 +927,12 @@ function renderPiece(square, piece, state) {
     group.appendChild(ring);
   }
 
-  const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-  text.setAttribute("x", cx);
-  text.setAttribute("y", cy);
-  text.setAttribute(
-    "class",
-    `piece-glyph ${piece.color === "white" ? "white-piece" : "black-piece"}`
-  );
-  text.textContent = GLYPHS[piece.color][piece.piece];
-  group.appendChild(text);
+  const iconSize = CELL - 10; // small margin inside the cell
+  const iconScale = iconSize / PIECE_ICON_VIEWBOX;
+  const iconOrigin = PIECE_ICON_VIEWBOX / 2 * iconScale;
+  const icon = buildPieceIcon(piece.piece, piece.color === "white" ? "white-piece" : "black-piece");
+  icon.setAttribute("transform", `translate(${cx - iconOrigin}, ${cy - iconOrigin}) scale(${iconScale})`);
+  group.appendChild(icon);
 
   if (draggable) {
     group.addEventListener("pointerdown", onPointerDown);

@@ -176,3 +176,74 @@ def test_fetch_history_network_error_returns_empty_list():
 def test_gateway_ws_url_converts_scheme():
     assert chat_feed._gateway_ws_url().startswith("ws://")
     assert chat_feed._gateway_ws_url().endswith("/api/v1/chat/ws")
+
+
+def test_check_pending_robot_move_ignores_unrelated_robot():
+    app_state = {"pending_robot_moves": {"drone-01": {"from": "e2", "to": "e4"}}}
+    event = {"robot_id": "drone-02", "event_type": "availability", "online": False}
+
+    changed = chat_feed.check_pending_robot_move(app_state, event)
+
+    assert changed is False
+    assert "drone-01" in app_state["pending_robot_moves"]
+
+
+def test_check_pending_robot_move_ignores_when_nothing_pending():
+    app_state = {}
+    event = {"robot_id": "drone-01", "event_type": "availability", "online": False}
+
+    assert chat_feed.check_pending_robot_move(app_state, event) is False
+
+
+def test_check_pending_robot_move_alerts_on_offline_and_stops_tracking():
+    app_state = {"pending_robot_moves": {"drone-01": {"from": "e2", "to": "e4"}}}
+    event = {
+        "robot_id": "drone-01",
+        "event_type": "availability",
+        "online": False,
+        "timestamp": "2026-08-01T12:00:00Z",
+    }
+
+    changed = chat_feed.check_pending_robot_move(app_state, event)
+
+    assert changed is True
+    assert "drone-01" not in app_state["pending_robot_moves"]
+    assert len(app_state["robot_alerts"]) == 1
+    alert = app_state["robot_alerts"][0]
+    assert alert["robot_id"] == "drone-01"
+    assert alert["from"] == "e2"
+    assert alert["to"] == "e4"
+    assert "e2" in alert["text"] and "e4" in alert["text"]
+
+
+def test_check_pending_robot_move_ignores_online_true():
+    app_state = {"pending_robot_moves": {"drone-01": {"from": "e2", "to": "e4"}}}
+    event = {"robot_id": "drone-01", "event_type": "availability", "online": True}
+
+    changed = chat_feed.check_pending_robot_move(app_state, event)
+
+    assert changed is False
+    assert "drone-01" in app_state["pending_robot_moves"]
+    assert app_state.get("robot_alerts", []) == []
+
+
+def test_check_pending_robot_move_clears_on_answer_without_alert():
+    app_state = {"pending_robot_moves": {"drone-01": {"from": "e2", "to": "e4"}}}
+    event = {"robot_id": "drone-01", "event_type": "answer", "text": "Готово."}
+
+    changed = chat_feed.check_pending_robot_move(app_state, event)
+
+    assert changed is True
+    assert "drone-01" not in app_state["pending_robot_moves"]
+    assert app_state.get("robot_alerts", []) == []
+
+
+def test_check_pending_robot_move_duplicate_offline_event_alerts_once():
+    app_state = {"pending_robot_moves": {"drone-01": {"from": "e2", "to": "e4"}}}
+    event = {"robot_id": "drone-01", "event_type": "availability", "online": False}
+
+    chat_feed.check_pending_robot_move(app_state, event)
+    changed_again = chat_feed.check_pending_robot_move(app_state, dict(event))
+
+    assert changed_again is False
+    assert len(app_state["robot_alerts"]) == 1

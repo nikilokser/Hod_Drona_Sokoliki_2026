@@ -5,7 +5,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from match_clock import end_match, mark_turn_done, pause_match, resume_match, start_match
+from match_clock import (
+    end_match,
+    mark_turn_done,
+    pause_match,
+    resume_match,
+    start_match,
+    sync_active_color,
+)
 
 
 def test_start_match_sets_running_state():
@@ -91,3 +98,41 @@ def test_end_match_from_paused():
     paused = pause_match(clock)
     ended = end_match(paused)
     assert ended["status"] == "finished"
+
+
+def test_sync_active_color_flips_and_resets_move_clock():
+    clock = start_match()  # active_color == "white"
+    updated = sync_active_color(clock, "black")
+    assert updated["active_color"] == "black"
+    assert updated["move_started_at"] != clock["move_started_at"]
+    assert updated["match_started_at"] == clock["match_started_at"]
+
+
+def test_sync_active_color_noop_when_already_matching():
+    clock = start_match()
+    updated = sync_active_color(clock, "white")
+    assert updated == clock
+
+
+def test_sync_active_color_noop_when_idle():
+    clock = {
+        "status": "idle",
+        "match_started_at": None,
+        "active_color": None,
+        "move_started_at": None,
+        "frozen_at": None,
+    }
+    updated = sync_active_color(clock, "white")
+    assert updated == clock
+
+
+def test_sync_active_color_noop_when_paused():
+    clock = pause_match(start_match())
+    updated = sync_active_color(clock, "black")
+    assert updated == clock
+
+
+def test_sync_active_color_noop_when_finished():
+    clock = end_match(start_match())
+    updated = sync_active_color(clock, "black")
+    assert updated == clock

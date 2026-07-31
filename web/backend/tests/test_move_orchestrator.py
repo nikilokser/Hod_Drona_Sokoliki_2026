@@ -31,6 +31,10 @@ def make_app_state(**overrides):
         "our_color": "white",
         "side_to_move": "white",
         "bindings": BINDINGS,
+        # execute_move() calls match_clock.sync_active_color(), which reads
+        # these two keys - idle/unset is the fixture default so it stays a
+        # no-op unless a test explicitly overrides it.
+        "match_clock": {"status": "idle", "active_color": None},
     }
     state.update(overrides)
     return state
@@ -514,3 +518,57 @@ async def test_propose_and_execute_move_forced_after_regeneration_limit(monkeypa
     attempts = result["round"]["attempts"]
     assert len(attempts) == move_orchestrator.MAX_REGENERATIONS + 1
     assert attempts[-1].get("forced_after_regeneration_limit") is True
+
+
+# --- execute_move tracks pending robot moves for chat_feed.check_pending_robot_move ---
+
+
+def test_execute_move_tracks_pending_move_on_successful_dispatch():
+    app_state = make_app_state()
+    gateway_response = {"ok": True, "response": {"message_id": "msg-123"}}
+    with patch("move_orchestrator.send_fly_command", return_value=gateway_response):
+        move_orchestrator.execute_move(app_state, "g1", "f3")
+
+    assert app_state["pending_robot_moves"]["drone-06"] == {
+        "message_id": "msg-123",
+        "from": "g1",
+        "to": "f3",
+    }
+
+
+def test_execute_move_does_not_track_when_dispatch_fails():
+    app_state = make_app_state()
+    with patch(
+        "move_orchestrator.send_fly_command",
+        return_value={"ok": False, "error": "Robot drone-06 is offline"},
+    ):
+        move_orchestrator.execute_move(app_state, "g1", "f3")
+
+    assert app_state.get("pending_robot_moves", {}) == {}
+
+
+def test_execute_move_overwrites_previous_pending_entry_for_same_robot():
+    app_state = make_app_state(
+        pending_robot_moves={"drone-06": {"message_id": "old", "from": "g1", "to": "h3"}}
+    )
+    gateway_response = {"ok": True, "response": {"message_id": "new-msg"}}
+    with patch("move_orchestrator.send_fly_command", return_value=gateway_response):
+        move_orchestrator.execute_move(app_state, "g1", "f3")
+
+    assert app_state["pending_robot_moves"]["drone-06"]["message_id"] == "new-msg"
+    assert app_state["pending_robot_moves"]["drone-06"]["to"] == "f3"
+
+
+def test_execute_move_does_not_track_when_gateway_rejects_without_message_id():
+    # Gateway answers HTTP 200 (so gateway_client reports ok=True) but the
+    # target was already known offline, so it refused to actually queue the
+    # command - no message_id means nothing was ever dispatched to track.
+    app_state = make_app_state()
+    gateway_response = {
+        "ok": True,
+        "response": {"success": False, "message_id": None, "error": "Robot drone-06 is offline"},
+    }
+    with patch("move_orchestrator.send_fly_command", return_value=gateway_response):
+        move_orchestrator.execute_move(app_state, "g1", "f3")
+
+    assert app_state.get("pending_robot_moves", {}) == {}

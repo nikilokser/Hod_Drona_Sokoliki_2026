@@ -77,6 +77,21 @@ def resume_match(match_clock: dict) -> dict:
     }
 
 
+def sync_active_color(match_clock: dict, new_active_color: str) -> dict:
+    """Keeps the match clock's active_color in lockstep with the board's
+    side_to_move whenever a real move happens (manual-mode/orchestrator
+    moves, and opponent moves recorded via view-mode drag) - instead of
+    requiring a separate manual "Ход сделан" click after every single move.
+    "correct" mode is a pure board-state fix, not a real move, and does not
+    call this. No-op if the clock isn't currently running or already
+    matches - a move made before "Старт матча", or while paused/finished,
+    must not implicitly start or perturb the clock."""
+
+    if match_clock["status"] != "running" or match_clock["active_color"] == new_active_color:
+        return match_clock
+    return {**match_clock, "active_color": new_active_color, "move_started_at": _now_iso()}
+
+
 def end_match(match_clock: dict) -> dict:
     """Ends the match early. Caller must ensure status is "running" or
     "paused" first (see app.py) - there is nothing to end from "idle",

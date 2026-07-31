@@ -75,6 +75,72 @@ def test_manual_mode_calls_gateway_for_bound_piece(client):
     assert body["result"]["gateway_result"] == {"ok": True, "response": {}}
 
 
+# --- last_move tracking and match-clock auto-sync ---------------------------
+
+
+def test_last_move_recorded_in_view_mode(client):
+    client.post("/api/move", json={"from": "e7", "to": "e5"})
+    assert app_module.app_state["last_move"] == {
+        "from": "e7", "to": "e5", "color": "black", "piece": "pawn",
+    }
+
+
+def test_last_move_recorded_in_correct_mode(client):
+    client.post("/api/mode", json={"mode": "correct"})
+    client.post("/api/move", json={"from": "e2", "to": "e4"})
+    assert app_module.app_state["last_move"] == {
+        "from": "e2", "to": "e4", "color": "white", "piece": "pawn",
+    }
+
+
+def test_last_move_recorded_in_manual_mode(client):
+    client.post("/api/mode", json={"mode": "manual"})
+    with patch("move_orchestrator.send_fly_command", return_value={"ok": True}):
+        client.post("/api/move", json={"from": "e2", "to": "e4"})
+    assert app_module.app_state["last_move"] == {
+        "from": "e2", "to": "e4", "color": "white", "piece": "pawn",
+    }
+
+
+def test_reset_clears_last_move(client):
+    client.post("/api/move", json={"from": "e7", "to": "e5"})
+    assert app_module.app_state["last_move"] is not None
+    client.post("/api/reset")
+    assert app_module.app_state["last_move"] is None
+
+
+def test_view_mode_move_auto_advances_running_clock(client):
+    client.post("/api/match/start")  # white active, running
+    # Simulate: it's actually black's (the opponent's) turn right now.
+    client.post("/api/side-to-move", json={"color": "black"})
+    client.post("/api/match/turn-done")  # judge flips the clock to match: black active
+
+    client.post("/api/move", json={"from": "e7", "to": "e5"})  # opponent's real move, recorded
+    assert app_module.app_state["side_to_move"] == "white"
+    assert app_module.app_state["match_clock"]["active_color"] == "white"
+
+
+def test_correct_mode_move_does_not_advance_running_clock(client):
+    client.post("/api/match/start")
+    client.post("/api/mode", json={"mode": "correct"})
+    client.post("/api/move", json={"from": "e2", "to": "e4"})
+    assert app_module.app_state["match_clock"]["active_color"] == "white"
+
+
+def test_manual_mode_move_auto_advances_running_clock(client):
+    client.post("/api/match/start")
+    client.post("/api/mode", json={"mode": "manual"})
+    with patch("move_orchestrator.send_fly_command", return_value={"ok": True}):
+        client.post("/api/move", json={"from": "e2", "to": "e4"})
+    assert app_module.app_state["match_clock"]["active_color"] == "black"
+
+
+def test_view_mode_move_does_not_advance_idle_clock(client):
+    client.post("/api/move", json={"from": "e7", "to": "e5"})
+    assert app_module.app_state["match_clock"]["status"] == "idle"
+    assert app_module.app_state["match_clock"]["active_color"] is None
+
+
 def test_manual_mode_skips_gateway_for_opponent_piece(client):
     client.post("/api/mode", json={"mode": "manual"})
     client.post("/api/side-to-move", json={"color": "black"})  # legitimately black's turn

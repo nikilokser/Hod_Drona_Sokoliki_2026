@@ -24,8 +24,8 @@
      it's a stand-in for the real wooden board, not part of the UI palette. */
   --light-square: #f0d9b5;
   --dark-square: #b58863;
-  --board-border: #3a2a1d;
-  --ours-ring: #2f7bd8;
+  --board-border: #2a1d13;
+  --ours-ring: var(--accent);
 
   --shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
   --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.5);
@@ -233,6 +233,25 @@ select {
   min-width: 160px;
 }
 
+/* Persistent (not a toast) confirmation that a move actually happened -
+   visible regardless of which tab is open, since it lives in the always-on
+   clock panel. Neutral styling for the opponent's recorded move; the
+   accent/success treatment only kicks in for OUR OWN move, so it's
+   unmistakable that you don't need to move again. */
+.last-move-banner {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.last-move-banner.ours {
+  background: var(--success-bg);
+  color: var(--success-text);
+  font-weight: 600;
+}
+
 .clock-readout {
   display: flex;
   gap: 20px;
@@ -286,10 +305,10 @@ select {
 .board-area {
   width: 100%;
   max-width: 640px;
-  border-radius: 10px;
+  border-radius: 6px;
   overflow: hidden;
-  box-shadow: var(--shadow-lg);
-  border: 6px solid var(--board-border);
+  box-shadow: var(--shadow-lg), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  border: 4px solid var(--board-border);
 }
 
 #board {
@@ -379,24 +398,20 @@ select {
   cursor: grabbing;
 }
 
-.piece-glyph {
-  font-size: 34px;
-  text-anchor: middle;
-  dominant-baseline: central;
-  paint-order: stroke;
-  stroke: #000;
-  stroke-width: 1px;
+.piece-icon {
+  filter: drop-shadow(0 1.5px 1.5px rgba(0, 0, 0, 0.45));
 }
 
-.piece-glyph.black-piece {
-  fill: #111;
-  stroke: #eee;
-  stroke-width: 0.6px;
+.piece-icon.white-piece {
+  fill: #fbfbfb;
+  stroke: #2b2b2b;
+  stroke-width: 0.6;
 }
 
-.piece-glyph.white-piece {
-  fill: #fdfdfd;
-  stroke: #111;
+.piece-icon.black-piece {
+  fill: #1c1c1c;
+  stroke: #f2f2f2;
+  stroke-width: 0.4;
 }
 
 .board-label {
@@ -415,17 +430,39 @@ select {
   opacity: 0.85;
 }
 
-.analysis-arrow {
-  stroke: var(--accent);
-  stroke-width: 4px;
-  opacity: 0.85;
+.last-move-highlight {
+  fill: rgba(255, 214, 51, 0.35);
   pointer-events: none;
 }
 
-.analysis-arrow-head {
-  fill: var(--accent);
-  opacity: 0.85;
+.board-arrow {
+  stroke-width: 6px;
+  stroke-linecap: round;
+  opacity: 0.88;
   pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+}
+
+.board-arrow-head {
+  opacity: 0.88;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+}
+
+.board-arrow--analysis {
+  stroke: var(--accent);
+}
+
+.board-arrow-head--analysis {
+  fill: var(--accent);
+}
+
+.board-arrow--last-move {
+  stroke: #4f8fe0;
+}
+
+.board-arrow-head--last-move {
+  fill: #4f8fe0;
 }
 
 /* Chat panel */
@@ -486,6 +523,10 @@ select {
   font-size: 0.68rem;
   color: var(--text-muted);
   margin-bottom: 2px;
+}
+
+.chat-event-agent {
+  font-weight: 700;
 }
 
 .chat-event.outgoing {
@@ -645,6 +686,48 @@ select {
   color: var(--text-muted);
   font-size: 0.75rem;
   line-height: 1.4;
+}
+
+/* Robot alerts - a dispatched move whose robot went offline before we ever
+   heard back from it (see chat_feed.check_pending_robot_move). Deliberately
+   separate from .message-bar: those are single-slot and get overwritten by
+   the next unrelated action, but a lost-in-flight robot needs to stay
+   visible until someone actually looks at it and dismisses it. */
+
+.robot-alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.robot-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text);
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  box-shadow: var(--shadow);
+}
+
+.robot-alert-dismiss {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  flex-shrink: 0;
+}
+
+.robot-alert-dismiss:hover {
+  opacity: 0.7;
 }
 
 /* Messages */

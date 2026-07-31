@@ -17,7 +17,14 @@ load_dotenv()
 from bindings import load_bindings, save_bindings  # noqa: E402
 from chat_feed import dedupe_events, load_chat_events, run_chat_feed  # noqa: E402
 from gateway_client import get_robots, send_chat_message  # noqa: E402
-from match_clock import end_match, mark_turn_done, pause_match, resume_match, start_match  # noqa: E402
+from match_clock import (  # noqa: E402
+    end_match,
+    mark_turn_done,
+    pause_match,
+    resume_match,
+    start_match,
+    sync_active_color,
+)
 from move_orchestrator import execute_move, propose_and_execute_move  # noqa: E402
 from state import ALL_ROLES, apply_move, initial_board, rebind_role  # noqa: E402
 from stockfish_client import run_continuous_analysis, start_engine, stop_engine  # noqa: E402
@@ -60,6 +67,9 @@ app_state: dict = {
     "stockfish_enabled": False,
     "stockfish_analysis": None,
     "orchestrator_log": [],
+    "pending_robot_moves": {},
+    "robot_alerts": [],
+    "last_move": None,
 }
 
 
@@ -111,6 +121,7 @@ async def set_our_color(payload: ColorRequest) -> dict:
 @app.post("/api/reset")
 async def reset_board() -> dict:
     app_state["board"] = initial_board(app_state["our_color"], app_state["bindings"])
+    app_state["last_move"] = None
     await manager.broadcast(app_state)
     return app_state
 
@@ -160,6 +171,21 @@ async def move(body: dict) -> dict:
             app_state["side_to_move"] = (
                 "black" if new_board[payload.to_square]["color"] == "white" else "white"
             )
+            app_state["last_move"] = {
+                "from": payload.from_square,
+                "to": payload.to_square,
+                "color": new_board[payload.to_square]["color"],
+                "piece": new_board[payload.to_square]["piece"],
+            }
+            if app_state["mode"] == "view":
+                # "correct" is a pure board-state fix (drag either side
+                # freely, no legality/turn check) - not a real move, so it
+                # must not silently advance the judge-controlled clock.
+                # "view" (recording the opponent's actual move) and
+                # "manual" (handled inside execute_move above) both do.
+                app_state["match_clock"] = sync_active_color(
+                    app_state["match_clock"], app_state["side_to_move"]
+                )
 
     if not result["ok"]:
         raise HTTPException(status_code=400, detail=result["error"])
@@ -171,6 +197,15 @@ async def move(body: dict) -> dict:
 @app.post("/api/orchestrator/propose-move")
 async def propose_move() -> dict:
     return await propose_and_execute_move(app_state, manager.broadcast)
+
+
+@app.post("/api/robot-alerts/{alert_id}/dismiss")
+async def dismiss_robot_alert(alert_id: str) -> dict:
+    app_state["robot_alerts"] = [
+        alert for alert in app_state.get("robot_alerts", []) if alert["id"] != alert_id
+    ]
+    await manager.broadcast(app_state)
+    return app_state
 
 
 class ChatSendRequest(BaseModel):

@@ -34,6 +34,7 @@ if str(_REPO_ROOT) not in sys.path:
 from move_validator import validate_move  # noqa: E402 (see sys.path setup above)
 
 from gateway_client import ask_robots, get_robots, send_fly_command
+from match_clock import sync_active_color
 from state import apply_move
 from stockfish_client import board_to_fen
 
@@ -273,9 +274,36 @@ def execute_move(app_state: dict, from_sq: str, to_sq: str) -> dict:
 
     app_state["board"] = new_board
     app_state["side_to_move"] = "black" if new_board[to_sq]["color"] == "white" else "white"
+    app_state["match_clock"] = sync_active_color(app_state["match_clock"], app_state["side_to_move"])
+    app_state["last_move"] = {
+        "from": from_sq,
+        "to": to_sq,
+        "color": new_board[to_sq]["color"],
+        "piece": new_board[to_sq]["piece"],
+    }
 
     if result["moved_robot_id"]:
-        result["gateway_result"] = send_fly_command(result["moved_robot_id"], to_sq)
+        robot_id = result["moved_robot_id"]
+        gateway_result = send_fly_command(robot_id, to_sq)
+        result["gateway_result"] = gateway_result
+        # gateway_result["ok"] only means the HTTP call to Gateway itself
+        # succeeded - Gateway still answers with HTTP 200 + success=False
+        # (and no message_id) when it rejects the command outright, e.g. the
+        # target was already known offline before we ever tried (see
+        # reject_offline_commands in the Gateway). Only a real message_id
+        # means the robot actually received the command and is now supposed
+        # to be doing something - that's the only case worth watching for a
+        # later "went offline mid-flight" alert (see
+        # chat_feed.check_pending_robot_move). Dispatch is fire-and-forget
+        # (send_fly_command doesn't wait for an answer), so this pending-move
+        # record is the only trace that anything is in flight at all.
+        message_id = (gateway_result.get("response") or {}).get("message_id")
+        if message_id:
+            app_state.setdefault("pending_robot_moves", {})[robot_id] = {
+                "message_id": message_id,
+                "from": from_sq,
+                "to": to_sq,
+            }
 
     return result
 
