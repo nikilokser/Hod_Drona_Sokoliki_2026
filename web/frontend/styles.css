@@ -96,10 +96,24 @@ select {
 }
 
 .chat-panel h3 {
-  margin: 0 0 10px;
+  margin: 0;
   font-size: 0.9rem;
   color: #c9cede;
   font-weight: 600;
+}
+
+.chat-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.chat-filter-toggle {
+  font-size: 0.72rem;
+  color: #9aa0ad;
+  white-space: nowrap;
 }
 
 .chat-feed {

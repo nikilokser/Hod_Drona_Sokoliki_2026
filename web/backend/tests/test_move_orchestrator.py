@@ -307,9 +307,27 @@ def test_execute_move_rejects_wrong_turn():
 
 @pytest.mark.asyncio
 async def test_propose_and_execute_move_rejects_wrong_mode():
-    app_state = make_app_state(mode="view")
+    app_state = make_app_state(mode="correct")
     result = await move_orchestrator.propose_and_execute_move(app_state, _noop_broadcast)
     assert result["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_propose_and_execute_move_allowed_in_view_mode(monkeypatch):
+    # TEMPORARY debug relaxation (see move_orchestrator.py) - view mode is
+    # allowed alongside manual until the orchestrator is stable.
+    app_state = make_app_state(mode="view")
+    monkeypatch.setattr(
+        move_orchestrator,
+        "call_strong_model",
+        lambda fen, color, feedback=None: {
+            "ok": True, "from": "b1", "to": "c3", "reasoning": "test"
+        },
+    )
+    monkeypatch.setattr(move_orchestrator, "compute_quorum", lambda app_state: [])
+    with patch("move_orchestrator.send_fly_command", return_value={"ok": True}):
+        result = await move_orchestrator.propose_and_execute_move(app_state, _noop_broadcast)
+    assert result["ok"] is True
 
 
 @pytest.mark.asyncio

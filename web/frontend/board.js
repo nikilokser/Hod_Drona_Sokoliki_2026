@@ -48,6 +48,7 @@ const confirmText = document.getElementById("confirm-text");
 const confirmOkButton = document.getElementById("confirm-ok");
 const confirmCancelButton = document.getElementById("confirm-cancel");
 const chatFeed = document.getElementById("chat-feed");
+const chatShowSystemToggle = document.getElementById("chat-show-system-toggle");
 const chatSendForm = document.getElementById("chat-send-form");
 const chatSendInput = document.getElementById("chat-send-input");
 const clockTurnEl = document.getElementById("clock-turn");
@@ -275,13 +276,17 @@ const ORCHESTRATOR_OUTCOME_LABELS = {
 };
 
 function renderOrchestratorPanel(state) {
-  const eligible = state.mode === "manual" && state.side_to_move === state.our_color;
+  // TEMPORARY: also allowed in "view" for debugging the orchestrator
+  // end-to-end without switching modes - mirrors the same relaxation in
+  // move_orchestrator.py. Narrow back to "manual" only once stable.
+  const modeOk = state.mode === "manual" || state.mode === "view";
+  const eligible = modeOk && state.side_to_move === state.our_color;
   proposeMoveButton.disabled = proposingMove || !eligible;
   orchestratorStatusEl.textContent = proposingMove
     ? "Идёт согласование хода…"
     : eligible
       ? ""
-      : "Доступно только в режиме «Ручные ходы» в наш ход";
+      : "Доступно только в режиме «Ручные ходы» или «Наблюдение» в наш ход";
 
   renderOrchestratorLog(state);
 }
@@ -503,11 +508,22 @@ matchEndButton.addEventListener("click", async () => {
 
 setInterval(tickClocks, 1000);
 
+// Gateway sends event_type "command"/"answer" for actual negotiation/move
+// text, and "status"/"availability"/"error"/"system" for chatter that isn't
+// part of the discussion itself (typing-indicator-style progress pings,
+// online/offline flapping, connection errors). Hidden by default - the
+// checkbox in the panel header switches to showing everything.
+const CHAT_DISCUSSION_EVENT_TYPES = new Set(["command", "answer"]);
+let chatShowSystemEvents = false; // local-only UI filter, not persisted
+
 function renderChatFeed(state) {
   chatFeed.innerHTML = "";
   const events = state.chat_events || [];
+  const visibleEvents = chatShowSystemEvents
+    ? events
+    : events.filter((event) => CHAT_DISCUSSION_EVENT_TYPES.has(event.event_type));
 
-  for (const event of events) {
+  for (const event of visibleEvents) {
     const bubble = document.createElement("div");
     bubble.className = `chat-event ${event.direction || "system"}`;
 
@@ -781,6 +797,11 @@ resetButton.addEventListener("click", async () => {
     "Сбросить поле в стартовую позицию? Текущее состояние партии на доске будет потеряно."
   );
   if (confirmed) apiResetBoard();
+});
+
+chatShowSystemToggle.addEventListener("change", () => {
+  chatShowSystemEvents = chatShowSystemToggle.checked;
+  if (currentState) renderChatFeed(currentState);
 });
 
 chatSendForm.addEventListener("submit", async (evt) => {

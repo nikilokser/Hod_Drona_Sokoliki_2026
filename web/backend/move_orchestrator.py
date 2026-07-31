@@ -283,7 +283,12 @@ def execute_move(app_state: dict, from_sq: str, to_sq: str) -> dict:
 async def propose_and_execute_move(
     app_state: dict, broadcast: Callable[[dict], Awaitable[None]]
 ) -> dict:
-    if app_state["mode"] != "manual":
+    # TEMPORARY: also allowed in "view" for debugging the orchestrator
+    # end-to-end without switching modes. execute_move() below already
+    # hardcodes apply_move's mode to "manual" regardless of app_state["mode"],
+    # so this is the only gate that needs relaxing. Narrow this back to
+    # "manual" only once the orchestrator is stable (per user request).
+    if app_state["mode"] not in ("manual", "view"):
         return {"ok": False, "error": "Предложение хода доступно только в режиме «Ручные ходы»"}
 
     our_color = app_state["our_color"]

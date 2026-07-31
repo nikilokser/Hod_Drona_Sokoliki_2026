@@ -94,7 +94,13 @@
       </main>
 
       <aside class="chat-panel">
-        <h3>Лента переговоров</h3>
+        <div class="chat-panel-header">
+          <h3>Лента переговоров</h3>
+          <label class="toggle-label chat-filter-toggle">
+            <input type="checkbox" id="chat-show-system-toggle" />
+            + системные события
+          </label>
+        </div>
         <div id="chat-feed" class="chat-feed"></div>
         <form id="chat-send-form" class="chat-send-form">
           <input
