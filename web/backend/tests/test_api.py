@@ -64,13 +64,18 @@ def test_move_applied_in_correct_mode_without_gateway_call(client):
 
 
 def test_manual_mode_calls_gateway_for_bound_piece(client):
+    # Bind explicitly instead of relying on whatever robot_id happens to be
+    # in the real config/bindings.json for pawn_5 (e2's pawn) right now -
+    # that file reflects live bindings made through the running UI and
+    # drifts independently of this test.
+    client.post("/api/bindings", json={"role": "pawn_5", "robot_id": "peshka-99"})
     client.post("/api/mode", json={"mode": "manual"})
     with patch(
         "move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}
     ) as mock_send:
         response = client.post("/api/move", json={"from": "e2", "to": "e4"})
     assert response.status_code == 200
-    mock_send.assert_called_once_with("peshka-05", "e4")
+    mock_send.assert_called_once_with("peshka-99", "e4")
     body = response.json()
     assert body["result"]["gateway_result"] == {"ok": True, "response": {}}
 
@@ -150,14 +155,21 @@ def test_manual_mode_skips_gateway_for_opponent_piece(client):
     mock_send.assert_not_called()
 
 
-def test_manual_mode_rejects_wrong_turn_move(client):
+def test_manual_mode_allows_moving_any_piece_regardless_of_turn(client):
+    # "Manual" is a debug mode: any piece can be dragged no matter whose
+    # turn it officially is (per user request) - move our own white piece
+    # while side_to_move says black, and it still goes through and still
+    # dispatches to the robot.
+    client.post("/api/bindings", json={"role": "pawn_5", "robot_id": "peshka-99"})
     client.post("/api/mode", json={"mode": "manual"})
-    # default side_to_move is "white"; e7 is a black piece
-    with patch("move_orchestrator.send_fly_command") as mock_send:
-        response = client.post("/api/move", json={"from": "e7", "to": "e5"})
-    assert response.status_code == 400
-    assert "e7" in app_module.app_state["board"]
-    mock_send.assert_not_called()
+    client.post("/api/side-to-move", json={"color": "black"})
+    with patch(
+        "move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}
+    ) as mock_send:
+        response = client.post("/api/move", json={"from": "e2", "to": "e4"})
+    assert response.status_code == 200
+    assert "e4" in app_module.app_state["board"]
+    mock_send.assert_called_once_with("peshka-99", "e4")
 
 
 def test_correct_mode_allows_wrong_turn_move(client):

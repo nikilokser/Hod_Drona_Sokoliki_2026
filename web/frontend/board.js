@@ -4,118 +4,16 @@ const LEFT_MARGIN = 24;
 const BOTTOM_MARGIN = 24;
 const VIEWBOX_SIZE = CELL * 8 + LEFT_MARGIN; // square viewBox, margin reused on both axes
 
-// Flat vector piece icons (no external assets/fonts - drawn as plain shapes
-// in a shared 45x45 local coordinate space, scaled to fit a cell at render
-// time). Deliberately simple silhouettes rather than a photorealistic
-// classic set - reliable to render crisply at any board size instead of
-// depending on how a given OS/browser happens to draw chess Unicode glyphs.
-const PIECE_ICON_VIEWBOX = 45;
-
-const PIECE_SHAPES = {
-  pawn: [
-    { tag: "rect", attrs: { x: 11, y: 37, width: 23, height: 4, rx: 2 } },
-    { tag: "rect", attrs: { x: 13, y: 34, width: 19, height: 3, rx: 1.5 } },
-    { tag: "path", attrs: { d: "M19,19 C15,23 14,29 16,34 L29,34 C31,29 30,23 26,19 Z" } },
-    { tag: "ellipse", attrs: { cx: 22.5, cy: 18.5, rx: 4.2, ry: 1.8 } },
-    { tag: "circle", attrs: { cx: 22.5, cy: 12, r: 6.5 } },
-  ],
-  rook: [
-    { tag: "rect", attrs: { x: 11, y: 37, width: 23, height: 4, rx: 2 } },
-    { tag: "rect", attrs: { x: 13, y: 34, width: 19, height: 3, rx: 1 } },
-    { tag: "path", attrs: { d: "M16,34 C15,29 15,24 17,20 L28,20 C30,24 30,29 29,34 Z" } },
-    { tag: "rect", attrs: { x: 15, y: 16, width: 15, height: 4, rx: 1 } },
-    { tag: "rect", attrs: { x: 14, y: 12, width: 17, height: 4, rx: 1 } },
-    { tag: "rect", attrs: { x: 14, y: 6, width: 4, height: 6 } },
-    { tag: "rect", attrs: { x: 20.5, y: 6, width: 4, height: 6 } },
-    { tag: "rect", attrs: { x: 27, y: 6, width: 4, height: 6 } },
-  ],
-  bishop: [
-    { tag: "rect", attrs: { x: 12, y: 37, width: 21, height: 4, rx: 2 } },
-    { tag: "rect", attrs: { x: 14, y: 34, width: 17, height: 3, rx: 1 } },
-    {
-      tag: "path",
-      attrs: {
-        d: "M22.5,12 C26.5,12 28,16 27,20 C29,24 29,29 27,34 L18,34 " +
-          "C16,29 16,24 18,20 C17,16 18.5,12 22.5,12 Z",
-      },
-    },
-    // The traditional diagonal mitre cut - a stroke-only line, so it just
-    // inherits the piece's outline color/width variant, see .piece-icon-notch.
-    { tag: "line", attrs: { x1: 18, y1: 16, x2: 27, y2: 14, class: "piece-icon-notch" } },
-    { tag: "polygon", attrs: { points: "22.5,4 25.5,10.5 19.5,10.5" } },
-    { tag: "circle", attrs: { cx: 22.5, cy: 2.4, r: 1.7 } },
-  ],
-  // Deliberately low-poly (straight edges only, no bezier curves) - much
-  // more predictable to get looking intentional than a hand-tuned curved
-  // path; verified by rendering it standalone and comparing against the
-  // rest of the set before wiring it in here.
-  knight: [
-    { tag: "rect", attrs: { x: 11, y: 37, width: 23, height: 4, rx: 2 } },
-    { tag: "rect", attrs: { x: 13, y: 34, width: 19, height: 3, rx: 1 } },
-    {
-      tag: "path",
-      attrs: {
-        d: "M30,34 C30,28 29,22 27,18 C29,15 30,11 30,8 L24,7 C22,9 21,11 21,12 " +
-          "L24,14 L20,15 C17,13 13,13 9,15 C11,17 13,19 15,20 L20,19 " +
-          "C18,23 17,27 17,31 L17,34 Z",
-      },
-    },
-    { tag: "circle", attrs: { cx: 22, cy: 13, r: 1.1 } },
-  ],
-  queen: [
-    { tag: "rect", attrs: { x: 10, y: 37, width: 25, height: 4, rx: 2 } },
-    { tag: "rect", attrs: { x: 13, y: 34, width: 19, height: 3, rx: 1.5 } },
-    {
-      tag: "path",
-      attrs: {
-        d: "M17,34 C15,29 16,24 19,21 C17,18 18,15 22.5,15 C27,15 28,18 26,21 " +
-          "C29,24 30,29 28,34 Z",
-      },
-    },
-    { tag: "rect", attrs: { x: 16, y: 13, width: 13, height: 3, rx: 1.5 } },
-    { tag: "polygon", attrs: { points: "15,13 30,13 27.5,7 17.5,7" } },
-    { tag: "polygon", attrs: { points: "16.3,7 18.7,7 17.5,4" } },
-    { tag: "polygon", attrs: { points: "18.8,7 21.2,7 20,2.5" } },
-    { tag: "polygon", attrs: { points: "21.3,7 23.7,7 22.5,1.5" } },
-    { tag: "polygon", attrs: { points: "23.8,7 26.2,7 25,2.5" } },
-    { tag: "polygon", attrs: { points: "26.3,7 28.7,7 27.5,4" } },
-    { tag: "circle", attrs: { cx: 17.5, cy: 4, r: 1.3 } },
-    { tag: "circle", attrs: { cx: 20, cy: 2.5, r: 1.3 } },
-    { tag: "circle", attrs: { cx: 22.5, cy: 1.5, r: 1.3 } },
-    { tag: "circle", attrs: { cx: 25, cy: 2.5, r: 1.3 } },
-    { tag: "circle", attrs: { cx: 27.5, cy: 4, r: 1.3 } },
-  ],
-  king: [
-    { tag: "rect", attrs: { x: 10, y: 37, width: 25, height: 4, rx: 2 } },
-    { tag: "rect", attrs: { x: 13, y: 34, width: 19, height: 3, rx: 1.5 } },
-    {
-      tag: "path",
-      attrs: {
-        d: "M17,34 C15,29 16,24 19,21 C17,18 18,15 22.5,15 C27,15 28,18 26,21 " +
-          "C29,24 30,29 28,34 Z",
-      },
-    },
-    { tag: "rect", attrs: { x: 16, y: 13, width: 13, height: 3, rx: 1.5 } },
-    { tag: "polygon", attrs: { points: "15,13 30,13 28,8 17,8" } },
-    { tag: "rect", attrs: { x: 20.5, y: 1, width: 4, height: 7 } },
-    { tag: "rect", attrs: { x: 17.5, y: 3, width: 10, height: 3 } },
-  ],
-};
-
-function buildPieceIcon(pieceType, colorClass) {
-  const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
-  group.setAttribute("class", `piece-icon ${colorClass}`);
-
-  for (const shape of PIECE_SHAPES[pieceType] || []) {
-    const el = document.createElementNS("http://www.w3.org/2000/svg", shape.tag);
-    for (const [key, value] of Object.entries(shape.attrs)) {
-      el.setAttribute(key, value);
-    }
-    group.appendChild(el);
-  }
-
-  return group;
-}
+// Piece artwork is the actual lichess.org piece sets (open-licensed SVGs,
+// originally by Colin M.L. Burnett for cburnett and other contributors for
+// the rest - see web/frontend/pieces/<set>/), not hand-drawn - a hand-rolled
+// shape set didn't read as "real" chess pieces however much it was tuned.
+// Each set file is named "<w|b><KQRBNP>.svg" (lichess's own convention),
+// so swapping sets is just swapping the URL prefix.
+const PIECE_CODE = { king: "K", queen: "Q", rook: "R", bishop: "B", knight: "N", pawn: "P" };
+const PIECE_SET_STORAGE_KEY = "sokoliki-piece-set";
+const DEFAULT_PIECE_SET = "cburnett";
+let pieceSet = localStorage.getItem(PIECE_SET_STORAGE_KEY) || DEFAULT_PIECE_SET;
 
 const ROLE_ORDER = [
   "king", "queen", "bishop_1", "bishop_2", "knight_1", "knight_2", "rook_1", "rook_2",
@@ -176,6 +74,7 @@ const proposeMoveButton = document.getElementById("propose-move-button");
 const orchestratorStatusEl = document.getElementById("orchestrator-status");
 const orchestratorLogEl = document.getElementById("orchestrator-log");
 const themeToggleButton = document.getElementById("theme-toggle-button");
+const pieceSetSelect = document.getElementById("piece-set-select");
 const robotAlertsEl = document.getElementById("robot-alerts");
 const tabButtons = document.querySelectorAll(".tab-button");
 const tabPanels = document.querySelectorAll(".tab-panel");
@@ -201,6 +100,14 @@ let boardFlipped = false;
 // Skipping the rebuild when nothing board-relevant actually changed keeps
 // the DOM (and its pointer listeners) stable except on real moves.
 let lastBoardSignature = null;
+// Same idea as lastBoardSignature, but for the robot-binding dropdowns:
+// renderBindingsPanel used to tear down and recreate all 16 <select>
+// elements on every single broadcast (same ~0.5-1s cadence as the board).
+// Rebuilding a <select> while its native dropdown popup is open, or right
+// as a user clicks an <option>, closes the popup / drops the click - this
+// is what made choosing a robot feel flaky. Skipping the rebuild when
+// bindings/robot list didn't actually change fixes it the same way.
+let lastBindingsSignature = null;
 
 function squareToXY(square) {
   const file = FILES.indexOf(square[0]);
@@ -849,8 +756,19 @@ async function apiDismissRobotAlert(alertId) {
 }
 
 function renderBindingsPanel(state) {
-  bindingsList.innerHTML = "";
   if (!state.bindings) return;
+
+  const signature = JSON.stringify([state.bindings, latestRobots]);
+  if (signature === lastBindingsSignature) {
+    // Nothing that affects the dropdowns' options/selection actually
+    // changed since the last rebuild - skip tearing down the <select>
+    // elements so an open dropdown or an in-flight option click survives
+    // the frequent broadcasts driven by Stockfish/chat activity.
+    return;
+  }
+  lastBindingsSignature = signature;
+
+  bindingsList.innerHTML = "";
 
   for (const role of ROLE_ORDER) {
     const currentRobotId = state.bindings[role];
@@ -940,15 +858,16 @@ function renderPiece(square, piece, state) {
 
   const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
   group.dataset.square = square;
-  // "manual" dispatches real robot commands, so it only allows dragging the
-  // side whose turn it currently is; "correct" stays unrestricted (the way
-  // to fix an out-of-turn/wrong position); "view" allows only the opponent's
-  // pieces - there's no automated tracking, so this is the only way to
-  // record what the opponent actually did while keeping our own displayed
-  // pieces protected from accidental drags during a live match.
+  // "manual" dispatches real robot commands but is a debug mode - any piece
+  // can be dragged regardless of whose turn it officially is; "correct"
+  // stays unrestricted too (the way to fix an out-of-turn/wrong position);
+  // "view" allows only the opponent's pieces - there's no automated
+  // tracking, so this is the only way to record what the opponent actually
+  // did while keeping our own displayed pieces protected from accidental
+  // drags during a live match.
   const draggable =
     state.mode === "correct" ||
-    (state.mode === "manual" && piece.color === state.side_to_move) ||
+    state.mode === "manual" ||
     (state.mode === "view" && piece.color !== state.our_color);
   group.setAttribute("class", `piece ${draggable ? "" : "disabled"}`);
 
@@ -963,11 +882,15 @@ function renderPiece(square, piece, state) {
   }
 
   const iconSize = CELL - 10; // small margin inside the cell
-  const iconScale = iconSize / PIECE_ICON_VIEWBOX;
-  const iconOrigin = PIECE_ICON_VIEWBOX / 2 * iconScale;
-  const icon = buildPieceIcon(piece.piece, piece.color === "white" ? "white-piece" : "black-piece");
-  icon.setAttribute("transform", `translate(${cx - iconOrigin}, ${cy - iconOrigin}) scale(${iconScale})`);
-  group.appendChild(icon);
+  const colorCode = piece.color === "white" ? "w" : "b";
+  const image = document.createElementNS("http://www.w3.org/2000/svg", "image");
+  image.setAttribute("href", `/pieces/${pieceSet}/${colorCode}${PIECE_CODE[piece.piece]}.svg`);
+  image.setAttribute("x", cx - iconSize / 2);
+  image.setAttribute("y", cy - iconSize / 2);
+  image.setAttribute("width", iconSize);
+  image.setAttribute("height", iconSize);
+  image.setAttribute("class", "piece-image");
+  group.appendChild(image);
 
   if (draggable) {
     group.addEventListener("pointerdown", onPointerDown);
@@ -979,12 +902,28 @@ function renderPiece(square, piece, state) {
 function onPointerDown(evt) {
   const group = evt.currentTarget;
   const square = group.dataset.square;
+  // setPointerCapture is requested for its side benefits (suppresses text
+  // selection/native touch scrolling for the gesture), but move/up/cancel
+  // listeners are attached to `window`, not `group` - relying on the
+  // captured element to keep receiving events meant hit-testing (not true
+  // capture redirection) sometimes decided differently once a fast/long
+  // drag moved the pointer far from the piece's still-catching-up visual
+  // position, silently dropping the rest of the gesture. `window` always
+  // sees every pointermove/pointerup regardless of what's visually
+  // underneath, so the pointerId check below is what scopes it correctly.
   group.setPointerCapture(evt.pointerId);
   group.classList.add("dragging");
   svg.appendChild(group); // raise to top while dragging
   drag = { square, group, pointerId: evt.pointerId };
-  group.addEventListener("pointermove", onPointerMove);
-  group.addEventListener("pointerup", onPointerUp);
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
+  // The OS/browser can cancel an in-progress pointer gesture without ever
+  // firing pointerup - alt-tabbing away, a touch scroll/zoom gesture taking
+  // over, the pointer device disconnecting. Without handling this, `drag`
+  // would stay non-null forever, which permanently blocks render()'s
+  // `if (drag) return` guard - freezing the entire board (no future
+  // opponent moves or broadcasts would ever redraw it again).
+  window.addEventListener("pointercancel", onPointerCancel);
 }
 
 function onPointerMove(evt) {
@@ -996,20 +935,35 @@ function onPointerMove(evt) {
   drag.group.setAttribute("transform", `translate(${dx}, ${dy})`);
 }
 
+function endDragGesture(evt) {
+  window.removeEventListener("pointermove", onPointerMove);
+  window.removeEventListener("pointerup", onPointerUp);
+  window.removeEventListener("pointercancel", onPointerCancel);
+  try {
+    drag.group.releasePointerCapture(evt.pointerId);
+  } catch {
+    // Capture may already be gone (e.g. on pointercancel) - nothing to do.
+  }
+  drag.group.classList.remove("dragging");
+  drag = null;
+}
+
+function onPointerCancel(evt) {
+  if (!drag || evt.pointerId !== drag.pointerId) return;
+  endDragGesture(evt);
+  snapBackBoard(); // clear the leftover drag transform, piece returns home
+}
+
 async function onPointerUp(evt) {
   if (!drag || evt.pointerId !== drag.pointerId) return;
   const { x, y } = svgPoint(evt);
   const targetSquare = xyToSquare(x, y);
   const fromSquare = drag.square;
 
-  drag.group.removeEventListener("pointermove", onPointerMove);
-  drag.group.removeEventListener("pointerup", onPointerUp);
-  drag.group.releasePointerCapture(evt.pointerId);
-  drag.group.classList.remove("dragging");
-  drag = null;
+  endDragGesture(evt);
 
   if (targetSquare === fromSquare) {
-    render(currentState); // snap back, no API call for a no-op drop
+    snapBackBoard(); // no-op drop, no API call
     return;
   }
 
@@ -1018,12 +972,20 @@ async function onPointerUp(evt) {
       `Переместить фигуру ${fromSquare} → ${targetSquare}? В режиме отладки это отправит команду роботу.`
     );
     if (!confirmed) {
-      render(currentState); // snap back
+      snapBackBoard();
       return;
     }
   }
 
   apiMove(fromSquare, targetSquare);
+}
+
+// Forces the board's <g> pieces to redraw at their real positions even when
+// state.board itself hasn't changed (a rejected/cancelled/no-op drag left a
+// piece mid-transform) - render()'s lastBoardSignature check would
+// otherwise skip the rebuild entirely since nothing state-wise changed.
+function snapBackBoard() {
+  if (currentState) renderBoard(currentState);
 }
 
 async function apiMove(from, to) {
@@ -1036,7 +998,7 @@ async function apiMove(from, to) {
     const body = await response.json();
     if (!response.ok) {
       showMessage(body.detail || "Ход отклонён", "error");
-      render(currentState); // snap back
+      snapBackBoard();
       return;
     }
     const gatewayResult = body.result && body.result.gateway_result;
@@ -1051,7 +1013,7 @@ async function apiMove(from, to) {
     }
   } catch (err) {
     showMessage(`Сетевая ошибка: ${err}`, "error");
-    render(currentState);
+    snapBackBoard();
   }
 }
 
@@ -1154,6 +1116,13 @@ themeToggleButton.addEventListener("click", () => {
 });
 
 initTheme();
+
+pieceSetSelect.value = pieceSet;
+pieceSetSelect.addEventListener("change", () => {
+  pieceSet = pieceSetSelect.value;
+  localStorage.setItem(PIECE_SET_STORAGE_KEY, pieceSet);
+  if (currentState) renderBoard(currentState); // repaint pieces with the new set immediately
+});
 
 tabButtons.forEach((button) => {
   button.addEventListener("click", () => {

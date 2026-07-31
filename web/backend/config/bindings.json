@@ -1,7 +1,7 @@
 {
   "king": "drone-04",
   "queen": "drone-02",
-  "bishop_1": "sverk-6",
+  "bishop_1": "drone-05",
   "bishop_2": "drone-04",
   "knight_1": "drone-05",
   "knight_2": "drone-06",
@@ -10,8 +10,8 @@
   "pawn_1": "peshka-01",
   "pawn_2": "peshka-02",
   "pawn_3": "peshka-03",
-  "pawn_4": "peshka-04",
-  "pawn_5": "peshka-05",
+  "pawn_4": "drone-06",
+  "pawn_5": "peshka-04",
   "pawn_6": "peshka-06",
   "pawn_7": "peshka-07",
   "pawn_8": "peshka-08"

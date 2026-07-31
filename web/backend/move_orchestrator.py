@@ -257,14 +257,17 @@ def decide_round(votes: list[dict], board: dict, side_to_move: str) -> dict:
 
 def execute_move(app_state: dict, from_sq: str, to_sq: str) -> dict:
     """Applies a move exactly like POST /api/move does in "manual" mode:
-    checks turn, applies the board move, and if the moved piece is ours
-    (bound to a robot_id), dispatches the physical flight command through
-    the Gateway. Shared by the manual drag-and-drop endpoint and this
-    orchestrator so both execute a move identically."""
+    applies the board move, and if the moved piece is ours (bound to a
+    robot_id), dispatches the physical flight command through the Gateway.
+    Shared by the manual drag-and-drop endpoint and this orchestrator so
+    both execute a move identically.
 
-    moving_piece = app_state["board"].get(from_sq)
-    if moving_piece and moving_piece["color"] != app_state["side_to_move"]:
-        return {"ok": False, "error": "Сейчас не ваш ход"}
+    Does not itself gate on side_to_move - "manual" (debug) mode
+    deliberately allows moving any piece regardless of whose turn it
+    officially is. The AI orchestrator still only ever proposes a move for
+    the correct side (checked in propose_and_execute_move before this is
+    ever called), so nothing upstream relies on this function refusing an
+    out-of-turn move."""
 
     new_board, result = apply_move(
         app_state["board"], "manual", from_sq, to_sq, our_color=app_state["our_color"]
@@ -284,27 +287,60 @@ def execute_move(app_state: dict, from_sq: str, to_sq: str) -> dict:
 
     if result["moved_robot_id"]:
         robot_id = result["moved_robot_id"]
-        gateway_result = send_fly_command(robot_id, to_sq)
-        result["gateway_result"] = gateway_result
-        # gateway_result["ok"] only means the HTTP call to Gateway itself
-        # succeeded - Gateway still answers with HTTP 200 + success=False
-        # (and no message_id) when it rejects the command outright, e.g. the
-        # target was already known offline before we ever tried (see
-        # reject_offline_commands in the Gateway). Only a real message_id
-        # means the robot actually received the command and is now supposed
-        # to be doing something - that's the only case worth watching for a
-        # later "went offline mid-flight" alert (see
-        # chat_feed.check_pending_robot_move). Dispatch is fire-and-forget
-        # (send_fly_command doesn't wait for an answer), so this pending-move
-        # record is the only trace that anything is in flight at all.
-        message_id = (gateway_result.get("response") or {}).get("message_id")
-        if message_id:
-            app_state.setdefault("pending_robot_moves", {})[robot_id] = {
-                "message_id": message_id,
-                "from": from_sq,
-                "to": to_sq,
-            }
+        if new_board[to_sq]["piece"] == "pawn":
+            # Pawns aren't reachable through the Gateway at all - no MQTT
+            # bridge exists for them, only a direct HTTP API on their own IP
+            # (see peshka_client.py). This call is synchronous and already
+            # waits for the robot to report the real outcome, so none of the
+            # fire-and-forget/offline-tracking machinery below applies here.
+            result["gateway_result"] = dispatch_pawn_move(app_state, robot_id, from_sq, to_sq)
+        else:
+            gateway_result = send_fly_command(robot_id, to_sq)
+            result["gateway_result"] = gateway_result
+            # gateway_result["ok"] only means the HTTP call to Gateway itself
+            # succeeded - Gateway still answers with HTTP 200 + success=False
+            # (and no message_id) when it rejects the command outright, e.g. the
+            # target was already known offline before we ever tried (see
+            # reject_offline_commands in the Gateway). Only a real message_id
+            # means the robot actually received the command and is now supposed
+            # to be doing something - that's the only case worth watching for a
+            # later "went offline mid-flight" alert (see
+            # chat_feed.check_pending_robot_move). Dispatch is fire-and-forget
+            # (send_fly_command doesn't wait for an answer), so this pending-move
+            # record is the only trace that anything is in flight at all.
+            message_id = (gateway_result.get("response") or {}).get("message_id")
+            if message_id:
+                app_state.setdefault("pending_robot_moves", {})[robot_id] = {
+                    "message_id": message_id,
+                    "from": from_sq,
+                    "to": to_sq,
+                }
 
+    return result
+
+
+def dispatch_pawn_move(app_state: dict, robot_id: str, from_sq: str, to_sq: str) -> dict:
+    """Drives a pawn robot from from_sq to to_sq over its direct HTTP API
+    and keeps our own heading tracking (app_state["peshka_headings"]) in
+    sync with what it actually did - the robot itself has no absolute
+    heading, only wheel encoder counters, so this is the only place that
+    knows which way it's currently facing on the board."""
+
+    ip = app_state.get("peshka_ips", {}).get(robot_id)
+    if not ip:
+        return {
+            "ok": False,
+            "error": f"IP пешки {robot_id} не настроен (см. web/backend/config/peshka_ips.json)",
+        }
+
+    headings = app_state.setdefault("peshka_headings", {})
+    current_heading = headings.get(
+        robot_id, peshka_client.initial_heading_deg(app_state["our_color"])
+    )
+
+    result = peshka_client.move_pawn_to_cell(ip, from_sq, to_sq, current_heading)
+    if result.get("ok"):
+        headings[robot_id] = result["resulting_heading_deg"]
     return result
 
 

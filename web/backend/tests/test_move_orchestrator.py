@@ -301,12 +301,18 @@ def test_execute_move_dispatches_to_gateway_and_flips_side_to_move():
     assert app_state["side_to_move"] == "black"
 
 
-def test_execute_move_rejects_wrong_turn():
+def test_execute_move_allows_out_of_turn_move():
+    # execute_move() itself does not gate on side_to_move - "manual" mode is
+    # a debug mode that allows moving any piece regardless of whose turn it
+    # officially is. The AI orchestrator enforces the turn check itself,
+    # before ever calling execute_move (see propose_and_execute_move).
     app_state = make_app_state(side_to_move="black")
-    with patch("move_orchestrator.send_fly_command") as mock_send:
+    with patch(
+        "move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}
+    ) as mock_send:
         result = move_orchestrator.execute_move(app_state, "g1", "f3")
-    assert result["ok"] is False
-    mock_send.assert_not_called()
+    assert result["ok"] is True
+    mock_send.assert_called_once_with("drone-06", "f3")
 
 
 # --- propose_and_execute_move (full round) --------------------------------------------------------
