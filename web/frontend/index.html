@@ -7,27 +7,35 @@
 </head>
 <body>
   <div class="layout">
-    <header class="toolbar">
-      <div class="toolbar-group">
-        <span class="toolbar-label">Режим</span>
-        <select id="mode-select">
-          <option value="view">Наблюдение</option>
-          <option value="correct">Коррекция позиций</option>
-          <option value="manual">Ручные ходы (отладка)</option>
-        </select>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-logo" aria-hidden="true">🦅</span>
+        <span class="brand-name">Соколики</span>
       </div>
-      <div class="toolbar-group">
-        <span class="toolbar-label">Наш цвет</span>
-        <select id="color-select">
-          <option value="white">Белые</option>
-          <option value="black">Чёрные</option>
-        </select>
+
+      <div class="topbar-controls">
+        <label class="chip-select">
+          <span class="chip-select-label">Режим</span>
+          <select id="mode-select">
+            <option value="view">Наблюдение</option>
+            <option value="correct">Коррекция позиций</option>
+            <option value="manual">Ручные ходы (отладка)</option>
+          </select>
+        </label>
+        <label class="chip-select">
+          <span class="chip-select-label">Наш цвет</span>
+          <select id="color-select">
+            <option value="white">Белые</option>
+            <option value="black">Чёрные</option>
+          </select>
+        </label>
       </div>
-      <div class="toolbar-group">
-        <button id="reset-button" class="danger-button" type="button">Сбросить поле</button>
+
+      <div class="topbar-status">
+        <span class="status-pill" id="connection-status">подключение…</span>
+        <span class="status-pill" id="gateway-status">Gateway: …</span>
+        <button id="theme-toggle-button" class="icon-button" type="button" aria-label="Переключить тему">🌙</button>
       </div>
-      <div class="toolbar-group status" id="connection-status">подключение…</div>
-      <div class="toolbar-group status" id="gateway-status">Gateway: …</div>
     </header>
 
     <div class="clock-panel">
@@ -50,48 +58,17 @@
       </div>
     </div>
 
-    <div class="analysis-panel">
-      <div class="analysis-panel-row">
-        <div class="toolbar-group">
-          <span class="toolbar-label">Чей ход</span>
-          <select id="side-to-move-select">
-            <option value="white">Белые</option>
-            <option value="black">Чёрные</option>
-          </select>
-        </div>
-        <div class="toolbar-group">
-          <label class="toggle-label">
-            <input type="checkbox" id="stockfish-toggle" />
-            Stockfish (анализ)
-          </label>
-        </div>
-        <div class="toolbar-group status" id="stockfish-result"></div>
-      </div>
-      <div class="eval-bar" id="eval-bar" hidden>
-        <div class="eval-bar-white" id="eval-bar-white"></div>
-        <div class="eval-bar-mid"></div>
-        <span class="eval-bar-label" id="eval-bar-label"></span>
-      </div>
-    </div>
-
-    <details class="bindings-panel" open>
-      <summary>Привязка роботов</summary>
-      <div id="bindings-list" class="bindings-list"></div>
-    </details>
-
-    <details class="bindings-panel orchestrator-panel" open>
-      <summary>Предложение хода (ИИ)</summary>
-      <div class="orchestrator-controls">
-        <button id="propose-move-button" type="button">Предложить ход ИИ</button>
-        <span class="toolbar-label" id="orchestrator-status"></span>
-      </div>
-      <div id="orchestrator-log" class="orchestrator-log"></div>
-    </details>
-
     <div class="main-row">
-      <main class="board-area">
-        <svg id="board" viewBox="0 0 424 424" width="678" height="678"></svg>
-      </main>
+      <div class="board-eval-wrap">
+        <div class="eval-bar" id="eval-bar" hidden>
+          <div class="eval-bar-white" id="eval-bar-white"></div>
+          <div class="eval-bar-mid"></div>
+          <span class="eval-bar-label" id="eval-bar-label"></span>
+        </div>
+        <main class="board-area">
+          <svg id="board" viewBox="0 0 424 424" width="678" height="678"></svg>
+        </main>
+      </div>
 
       <aside class="chat-panel">
         <div class="chat-panel-header">
@@ -112,6 +89,46 @@
           <button type="submit">Отправить</button>
         </form>
       </aside>
+    </div>
+
+    <div class="tabs-panel">
+      <div class="tabs-nav" role="tablist">
+        <button class="tab-button active" type="button" data-tab="orchestrator">Ход ИИ</button>
+        <button class="tab-button" type="button" data-tab="bindings">Привязка роботов</button>
+        <button class="tab-button" type="button" data-tab="analysis">Анализ</button>
+      </div>
+
+      <div class="tab-panel" data-tab-panel="orchestrator">
+        <div class="orchestrator-controls">
+          <button id="propose-move-button" type="button">Предложить ход ИИ</button>
+          <span class="toolbar-label" id="orchestrator-status"></span>
+        </div>
+        <div id="orchestrator-log" class="orchestrator-log"></div>
+      </div>
+
+      <div class="tab-panel" data-tab-panel="bindings" hidden>
+        <div id="bindings-list" class="bindings-list"></div>
+        <button id="reset-button" class="danger-button" type="button">Сбросить поле</button>
+      </div>
+
+      <div class="tab-panel" data-tab-panel="analysis" hidden>
+        <div class="analysis-panel-row">
+          <div class="toolbar-group">
+            <span class="toolbar-label">Чей ход</span>
+            <select id="side-to-move-select">
+              <option value="white">Белые</option>
+              <option value="black">Чёрные</option>
+            </select>
+          </div>
+          <div class="toolbar-group">
+            <label class="toggle-label">
+              <input type="checkbox" id="stockfish-toggle" />
+              Stockfish (анализ)
+            </label>
+          </div>
+          <span class="analysis-note" id="stockfish-result"></span>
+        </div>
+      </div>
     </div>
 
     <div id="message-bar" class="message-bar" hidden></div>

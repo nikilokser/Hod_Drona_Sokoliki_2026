@@ -67,6 +67,9 @@ const evalBarLabelEl = document.getElementById("eval-bar-label");
 const proposeMoveButton = document.getElementById("propose-move-button");
 const orchestratorStatusEl = document.getElementById("orchestrator-status");
 const orchestratorLogEl = document.getElementById("orchestrator-log");
+const themeToggleButton = document.getElementById("theme-toggle-button");
+const tabButtons = document.querySelectorAll(".tab-button");
+const tabPanels = document.querySelectorAll(".tab-panel");
 
 const MOVE_LIMIT_SEC = 5 * 60;
 const MATCH_LIMIT_SEC = 2 * 60 * 60;
@@ -80,6 +83,15 @@ let proposingMove = false; // local-only: true while /api/orchestrator/propose-m
 // Flipped so our own side is always nearest the viewer at the bottom -
 // matches where the operator physically stands next to the real field.
 let boardFlipped = false;
+// Signature of the last board rebuild (board + whatever affects piece
+// draggability/highlighting). Continuous Stockfish analysis and the chat
+// feed broadcast a fresh full state every ~0.5-1s even when the board
+// itself hasn't changed - rebuilding the whole SVG board on every single
+// one of those needlessly widens the window where a user's pointerdown can
+// land on an empty/mid-rebuild board and silently fail to start a drag.
+// Skipping the rebuild when nothing board-relevant actually changed keeps
+// the DOM (and its pointer listeners) stable except on real moves.
+let lastBoardSignature = null;
 
 function squareToXY(square) {
   const file = FILES.indexOf(square[0]);
@@ -155,6 +167,17 @@ function render(state) {
     return;
   }
 
+  const signature = JSON.stringify([state.board, state.mode, state.our_color, state.side_to_move]);
+  if (signature === lastBoardSignature) {
+    // Nothing that affects the board's pieces/highlighting/draggability
+    // actually changed since the last rebuild (a very frequent case: every
+    // Stockfish analysis tick and every chat event broadcasts the full
+    // state) - skip tearing down and rebuilding the SVG to keep pointer
+    // listeners stable and avoid narrowing the window for a drag to start.
+    return;
+  }
+  lastBoardSignature = signature;
+
   renderBoard(state);
 }
 
@@ -223,8 +246,9 @@ function renderEvalBar(analysis) {
   }
 
   evalBarEl.hidden = false;
+  evalBarEl.classList.toggle("flipped", boardFlipped);
   const percent = scoreToWhitePercent(analysis.score);
-  evalBarWhiteEl.style.width = `${percent}%`;
+  evalBarWhiteEl.style.height = `${percent}%`;
   evalBarLabelEl.textContent = (analysis.score / 100).toFixed(2);
 }
 
@@ -282,14 +306,32 @@ function renderOrchestratorPanel(state) {
   const modeOk = state.mode === "manual" || state.mode === "view";
   const eligible = modeOk && state.side_to_move === state.our_color;
   proposeMoveButton.disabled = proposingMove || !eligible;
-  orchestratorStatusEl.textContent = proposingMove
-    ? "Идёт согласование хода…"
-    : eligible
-      ? ""
-      : "Доступно только в режиме «Ручные ходы» или «Наблюдение» в наш ход";
+  updateOrchestratorStatusText(eligible);
 
   renderOrchestratorLog(state);
 }
+
+// A full round (model calls + up to 3 vote-collection timeouts) can take
+// minutes; a static "Идёт согласование хода…" gives no way to tell a slow
+// round from a stuck one, so this ticks a live elapsed-seconds counter -
+// both from the render() path (on every broadcast) and from its own
+// 1s interval so it keeps moving between broadcasts too.
+let proposeStartedAt = null;
+
+function updateOrchestratorStatusText(eligible) {
+  if (proposingMove) {
+    const elapsed = proposeStartedAt ? Math.round((Date.now() - proposeStartedAt) / 1000) : 0;
+    orchestratorStatusEl.textContent = `Идёт согласование хода… (${elapsed} с)`;
+  } else {
+    orchestratorStatusEl.textContent = eligible
+      ? ""
+      : "Доступно только в режиме «Ручные ходы» или «Наблюдение» в наш ход";
+  }
+}
+
+setInterval(() => {
+  if (proposingMove) updateOrchestratorStatusText(true);
+}, 1000);
 
 function renderOrchestratorLog(state) {
   orchestratorLogEl.innerHTML = "";
@@ -305,7 +347,9 @@ function renderOrchestratorLog(state) {
     title.className = "orchestrator-round-title";
     title.textContent = final
       ? `${final.from} → ${final.to} (${final.piece || ""}) — ${execOk ? "выполнено" : "ошибка исполнения"}`
-      : "Ход не выбран";
+      : round.in_progress
+        ? "Согласование идёт… (попытки появятся ниже по мере готовности)"
+        : "Ход не выбран";
     card.appendChild(title);
 
     for (const attempt of round.attempts || []) {
@@ -325,6 +369,7 @@ function renderOrchestratorLog(state) {
 
 async function apiProposeMove() {
   proposingMove = true;
+  proposeStartedAt = Date.now();
   if (currentState) renderOrchestratorPanel(currentState);
 
   try {
@@ -339,6 +384,7 @@ async function apiProposeMove() {
     showMessage(`Сетевая ошибка: ${err}`, "error");
   } finally {
     proposingMove = false;
+    proposeStartedAt = null;
     if (currentState) renderOrchestratorPanel(currentState);
   }
 }
@@ -839,3 +885,34 @@ function connectWebSocket() {
 connectWebSocket();
 refreshRobots();
 setInterval(refreshRobots, GATEWAY_POLL_INTERVAL_MS);
+
+const THEME_STORAGE_KEY = "sokoliki-theme";
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  themeToggleButton.textContent = theme === "light" ? "🌙" : "☀️";
+  localStorage.setItem(THEME_STORAGE_KEY, theme);
+}
+
+function initTheme() {
+  const stored = localStorage.getItem(THEME_STORAGE_KEY);
+  const preferredLight = window.matchMedia("(prefers-color-scheme: light)").matches;
+  applyTheme(stored || (preferredLight ? "light" : "dark"));
+}
+
+themeToggleButton.addEventListener("click", () => {
+  const current = document.documentElement.getAttribute("data-theme");
+  applyTheme(current === "light" ? "dark" : "light");
+});
+
+initTheme();
+
+tabButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const target = button.dataset.tab;
+    tabButtons.forEach((b) => b.classList.toggle("active", b === button));
+    tabPanels.forEach((panel) => {
+      panel.hidden = panel.dataset.tabPanel !== target;
+    });
+  });
+});

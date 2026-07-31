@@ -2,12 +2,15 @@
 
 See docs/superpowers/specs/2026-07-31-ai-move-negotiation-design.md for the
 full design. High-level flow per round: a strong model proposes a move for
-our side -> validated locally (legality + no pawns, since pawns have no
-dispatcher agent yet) -> broadcast to the online piece agents bound to our
-still-on-board, non-pawn pieces for a да/нет/ход vote -> a repeated
-alternative move wins over a plain veto -> up to two regenerations -> the
-last locally-valid proposal is executed either way (fail-open) via the same
-apply_move + send_fly_command path "manual" drag-and-drop already uses.
+our side, for any piece including pawns -> validated locally for legality
+-> broadcast to the online piece agents bound to our still-on-board,
+non-pawn pieces for a да/нет/ход vote (pawns have no per-piece agent - they
+are excluded from the voting quorum, per the regulation's single pawn
+dispatcher, but a pawn CAN still be the piece the model proposes and moves)
+-> a repeated alternative move wins over a plain veto -> up to two
+regenerations -> the last locally-valid proposal is executed either way
+(fail-open) via the same apply_move + send_fly_command path "manual"
+drag-and-drop already uses.
 """
 
 from __future__ import annotations
@@ -39,8 +42,8 @@ STRONG_MODEL_API_KEY = os.environ.get("STRONG_MODEL_API_KEY", "")
 STRONG_MODEL_NAME = os.environ.get("STRONG_MODEL_NAME", "deepseek-v4-pro")
 
 MAX_REGENERATIONS = 2
-# Illegal/pawn proposals rejected by our own local validator, before ever
-# talking to the drones - cheap, doesn't spend the regeneration budget above.
+# Illegal proposals rejected by our own local validator, before ever talking
+# to the drones - cheap, doesn't spend the regeneration budget above.
 MAX_LOCAL_RETRIES = 3
 VOTE_ANSWER_TIMEOUT_SEC = 30.0
 ALTERNATIVE_ESCALATION_THRESHOLD = 2
@@ -56,9 +59,8 @@ PIECE_RU = {
 
 STRONG_MODEL_SYSTEM_PROMPT = (
     "Ты выбираешь ход за сторону {color} в упрощённых шахматах (без рокировки, "
-    "взятия на проходе, превращения пешки). Ходить можно только королём, "
-    "ферзём, слонами, конями и ладьями - ходы пешками сейчас не автоматизированы, "
-    "не предлагай их. Верни только JSON без markdown и пояснений вне полей: "
+    "взятия на проходе, превращения пешки). Ходить можно любой своей фигурой, "
+    "включая пешки. Верни только JSON без markdown и пояснений вне полей: "
     '{{"from": "e2", "to": "e4", "reasoning": "короткое обоснование по-русски"}}.'
 )
 
@@ -77,14 +79,12 @@ def to_validator_board(board: dict, side_to_move: str) -> dict:
     }
 
 
-def _is_legal_non_pawn_move(
+def _is_legal_move(
     board: dict, side_to_move: str, from_sq: str, to_sq: str
 ) -> tuple[bool, str | None]:
     occupant = board.get(from_sq)
     if occupant is None:
         return False, f"На клетке {from_sq} нет фигуры"
-    if occupant["piece"] == "pawn":
-        return False, "Ходы пешками не автоматизированы в этой версии"
 
     result = validate_move(
         to_validator_board(board, side_to_move),
@@ -234,7 +234,7 @@ def decide_round(votes: list[dict], board: dict, side_to_move: str) -> dict:
         if vote["kind"] != "move":
             continue
         move = vote["move"]
-        legal, _reason = _is_legal_non_pawn_move(board, side_to_move, move["from"], move["to"])
+        legal, _reason = _is_legal_move(board, side_to_move, move["from"], move["to"])
         if not legal:
             continue
         alt_supporters.setdefault((move["from"], move["to"]), []).append(vote)
@@ -296,7 +296,19 @@ async def propose_and_execute_move(
     if side_to_move != our_color:
         return {"ok": False, "error": "Сейчас не ваш ход"}
 
-    attempts: list[dict] = []
+    # The round is visible to every connected client from the moment it
+    # starts (not just once it finishes) - a full round (model calls +
+    # up to 3 vote-collection timeouts of up to VOTE_ANSWER_TIMEOUT_SEC each)
+    # can take minutes, and clicking the button then waiting on a single
+    # static "Идёт согласование хода…" with no visible progress made it
+    # impossible to tell a slow round from a stuck one. `attempts` is the
+    # same list object as round_log["attempts"], so appending to it and
+    # broadcasting after each step makes every attempt appear live.
+    round_log: dict = {"attempts": [], "final_proposal": None, "execution": None, "in_progress": True}
+    app_state.setdefault("orchestrator_log", []).append(round_log)
+    await broadcast(app_state)
+
+    attempts: list[dict] = round_log["attempts"]
     feedback: str | None = None
     regenerations = 0
     accepted_proposal: dict | None = None
@@ -309,9 +321,11 @@ async def propose_and_execute_move(
             )
             if not candidate.get("ok"):
                 attempts.append({"proposal": candidate, "outcome": "model_error"})
+                round_log["in_progress"] = False
+                await broadcast(app_state)
                 return {"ok": False, "error": candidate.get("error"), "attempts": attempts}
 
-            legal, reason = _is_legal_non_pawn_move(
+            legal, reason = _is_legal_move(
                 app_state["board"], side_to_move, candidate["from"], candidate["to"]
             )
             if legal:
@@ -324,6 +338,8 @@ async def propose_and_execute_move(
 
         if proposal is None:
             attempts.append({"outcome": "local_validation_exhausted"})
+            round_log["in_progress"] = False
+            await broadcast(app_state)
             return {
                 "ok": False,
                 "error": "Не удалось получить легальный ход от модели",
@@ -333,6 +349,7 @@ async def propose_and_execute_move(
         quorum = compute_quorum(app_state)
         if not quorum:
             attempts.append({"proposal": proposal, "outcome": "accepted_no_quorum", "quorum": []})
+            await broadcast(app_state)
             accepted_proposal = proposal
             break
 
@@ -346,6 +363,7 @@ async def propose_and_execute_move(
         )
         decision = decide_round(votes, app_state["board"], side_to_move)
         attempts.append({"proposal": proposal, "votes": votes, "quorum": quorum, **decision})
+        await broadcast(app_state)
 
         if decision["outcome"] == "accepted":
             accepted_proposal = proposal
@@ -371,11 +389,8 @@ async def propose_and_execute_move(
             )
 
     result = execute_move(app_state, accepted_proposal["from"], accepted_proposal["to"])
-    round_log = {
-        "attempts": attempts,
-        "final_proposal": accepted_proposal,
-        "execution": result,
-    }
-    app_state.setdefault("orchestrator_log", []).append(round_log)
+    round_log["final_proposal"] = accepted_proposal
+    round_log["execution"] = result
+    round_log["in_progress"] = False
     await broadcast(app_state)
     return {"ok": bool(result.get("ok")), "round": round_log}

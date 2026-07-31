@@ -161,13 +161,16 @@ def test_decide_round_illegal_alternative_dropped_as_noise():
     assert decision["outcome"] == "accepted"
 
 
-def test_decide_round_pawn_alternative_dropped():
+def test_decide_round_pawn_alternative_escalates():
+    # Pawn moves are legal proposals now (they just have no per-piece voting
+    # agent) - a repeated pawn alternative escalates like any other piece.
     votes = [
         {"kind": "move", "move": {"from": "e2", "to": "e4"}, "reason": "", "robot_id": "drone-06"},
         {"kind": "move", "move": {"from": "e2", "to": "e4"}, "reason": "", "robot_id": "drone-05"},
     ]
     decision = move_orchestrator.decide_round(votes, _board(), "white")
-    assert decision["outcome"] == "accepted"
+    assert decision["outcome"] == "escalated_alternative"
+    assert decision["alternative"] == {"from": "e2", "to": "e4"}
 
 
 # --- compute_quorum --------------------------------------------------------
@@ -395,27 +398,29 @@ async def test_propose_and_execute_move_accepted_all_yes(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_propose_and_execute_move_pawn_proposal_retried_locally_without_spending_regeneration(
-    monkeypatch,
-):
+async def test_propose_and_execute_move_pawn_proposal_accepted(monkeypatch):
+    # Pawns should move too via the orchestrator - they just have no
+    # per-piece voting agent (compute_quorum already excludes pawn robots;
+    # this is about the model being ALLOWED to propose one in the first
+    # place, which used to be rejected).
     app_state = make_app_state()
     monkeypatch.setattr(
         move_orchestrator,
         "call_strong_model",
-        _sequence_strong_model(
-            {"ok": True, "from": "e2", "to": "e4", "reasoning": "пешка вперёд"},
-            {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
-        ),
+        lambda fen, color, feedback=None: {
+            "ok": True, "from": "e2", "to": "e4", "reasoning": "пешка вперёд"
+        },
     )
     monkeypatch.setattr(move_orchestrator, "compute_quorum", lambda app_state: [])
 
-    with patch("move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}):
+    with patch(
+        "move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}
+    ) as mock_send:
         result = await move_orchestrator.propose_and_execute_move(app_state, _noop_broadcast)
 
     assert result["ok"] is True
-    assert app_state["board"]["f3"]["piece"] == "knight"
-    # The pawn rejection happened inside the local-retry loop of a single
-    # outer attempt, not as a separate voting round.
+    assert app_state["board"]["e4"]["piece"] == "pawn"
+    mock_send.assert_called_once_with("peshka-05", "e4")
     assert len(result["round"]["attempts"]) == 1
 
 
