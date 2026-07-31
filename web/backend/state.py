@@ -114,7 +114,9 @@ def rebind_role(board: dict, role: str, robot_id: str) -> dict:
     return new_board
 
 
-def apply_move(board: dict, mode: str, from_sq: str, to_sq: str) -> tuple[dict, dict]:
+def apply_move(
+    board: dict, mode: str, from_sq: str, to_sq: str, our_color: str
+) -> tuple[dict, dict]:
     """Apply a manual move, following the rules of the given field mode.
 
     Returns (new_board, result). result is
@@ -124,17 +126,26 @@ def apply_move(board: dict, mode: str, from_sq: str, to_sq: str) -> tuple[dict, 
     No chess-legality checking here on purpose (see the web-board-design and
     move_validator design docs) - only the data-integrity invariant that two
     same-color pieces can never occupy the same square.
+
+    "view" only allows moving the opponent's pieces (our_color is required
+    to know which those are) - there is no automated tracking of the real
+    board, so this is the only way to record the opponent's actual move
+    while keeping our own displayed pieces protected from accidental drags
+    during a live match.
     """
 
-    if mode == "view":
-        return board, {"ok": False, "error": "режим наблюдения — перемещения запрещены"}
-
-    if mode not in ("correct", "manual"):
+    if mode not in ("view", "correct", "manual"):
         return board, {"ok": False, "error": f"неизвестный режим: {mode}"}
 
     moving = board.get(from_sq)
     if moving is None:
         return board, {"ok": False, "error": f"на клетке {from_sq} нет фигуры"}
+
+    if mode == "view" and moving["color"] == our_color:
+        return board, {
+            "ok": False,
+            "error": "режим наблюдения — можно двигать только фигуры соперника",
+        }
 
     if from_sq == to_sq:
         return board, {"ok": False, "error": "исходная и целевая клетка совпадают"}

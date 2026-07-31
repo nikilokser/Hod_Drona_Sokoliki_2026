@@ -63,6 +63,9 @@ const stockfishResultEl = document.getElementById("stockfish-result");
 const evalBarEl = document.getElementById("eval-bar");
 const evalBarWhiteEl = document.getElementById("eval-bar-white");
 const evalBarLabelEl = document.getElementById("eval-bar-label");
+const proposeMoveButton = document.getElementById("propose-move-button");
+const orchestratorStatusEl = document.getElementById("orchestrator-status");
+const orchestratorLogEl = document.getElementById("orchestrator-log");
 
 const MOVE_LIMIT_SEC = 5 * 60;
 const MATCH_LIMIT_SEC = 2 * 60 * 60;
@@ -72,6 +75,7 @@ let latestRobots = [];
 let gatewayOk = false;
 let drag = null; // {square, group, pointerId, offsetX, offsetY}
 let lastAnalysis = null; // {from, to, score} - redrawn as an arrow after every render()
+let proposingMove = false; // local-only: true while /api/orchestrator/propose-move is in flight
 // Flipped so our own side is always nearest the viewer at the bottom -
 // matches where the operator physically stands next to the real field.
 let boardFlipped = false;
@@ -140,6 +144,7 @@ function render(state) {
   renderChatFeed(state);
   renderClockPanel(state);
   renderAnalysisPanel(state);
+  renderOrchestratorPanel(state);
 
   if (drag) {
     // A drag gesture is in progress on the board - rebuilding the SVG now
@@ -259,6 +264,81 @@ function drawAnalysisArrow() {
   head.setAttribute("class", "analysis-arrow-head");
   svg.appendChild(head);
 }
+
+const ORCHESTRATOR_OUTCOME_LABELS = {
+  accepted: "принято",
+  accepted_no_quorum: "принято (кворум недоступен)",
+  vetoed: "отклонено голосованием",
+  escalated_alternative: "предложена альтернатива",
+  model_error: "ошибка модели",
+  local_validation_exhausted: "модель не смогла предложить легальный ход",
+};
+
+function renderOrchestratorPanel(state) {
+  const eligible = state.mode === "manual" && state.side_to_move === state.our_color;
+  proposeMoveButton.disabled = proposingMove || !eligible;
+  orchestratorStatusEl.textContent = proposingMove
+    ? "Идёт согласование хода…"
+    : eligible
+      ? ""
+      : "Доступно только в режиме «Ручные ходы» в наш ход";
+
+  renderOrchestratorLog(state);
+}
+
+function renderOrchestratorLog(state) {
+  orchestratorLogEl.innerHTML = "";
+  const rounds = state.orchestrator_log || [];
+
+  for (const round of rounds.slice().reverse()) {
+    const card = document.createElement("div");
+    card.className = "orchestrator-round";
+
+    const final = round.final_proposal;
+    const execOk = round.execution && round.execution.ok;
+    const title = document.createElement("div");
+    title.className = "orchestrator-round-title";
+    title.textContent = final
+      ? `${final.from} → ${final.to} (${final.piece || ""}) — ${execOk ? "выполнено" : "ошибка исполнения"}`
+      : "Ход не выбран";
+    card.appendChild(title);
+
+    for (const attempt of round.attempts || []) {
+      const line = document.createElement("div");
+      line.className = "orchestrator-attempt";
+      const proposal = attempt.proposal;
+      const proposalText = proposal && proposal.from ? `${proposal.from} → ${proposal.to}` : "";
+      const outcomeText = ORCHESTRATOR_OUTCOME_LABELS[attempt.outcome] || attempt.outcome || "";
+      const forcedText = attempt.forced_after_regeneration_limit ? " (без консенсуса)" : "";
+      line.textContent = `${proposalText} — ${outcomeText}${forcedText}`;
+      card.appendChild(line);
+    }
+
+    orchestratorLogEl.appendChild(card);
+  }
+}
+
+async function apiProposeMove() {
+  proposingMove = true;
+  if (currentState) renderOrchestratorPanel(currentState);
+
+  try {
+    const response = await fetch("/api/orchestrator/propose-move", { method: "POST" });
+    const body = await response.json();
+    if (!body.ok) {
+      showMessage(body.error || "Не удалось согласовать ход", "error");
+    } else {
+      clearMessage();
+    }
+  } catch (err) {
+    showMessage(`Сетевая ошибка: ${err}`, "error");
+  } finally {
+    proposingMove = false;
+    if (currentState) renderOrchestratorPanel(currentState);
+  }
+}
+
+proposeMoveButton.addEventListener("click", () => apiProposeMove());
 
 async function apiSetSideToMove(color) {
   await fetch("/api/side-to-move", {
@@ -549,10 +629,14 @@ function renderPiece(square, piece, state) {
   group.dataset.square = square;
   // "manual" dispatches real robot commands, so it only allows dragging the
   // side whose turn it currently is; "correct" stays unrestricted (the way
-  // to fix an out-of-turn/wrong position) and "view" never allows dragging.
+  // to fix an out-of-turn/wrong position); "view" allows only the opponent's
+  // pieces - there's no automated tracking, so this is the only way to
+  // record what the opponent actually did while keeping our own displayed
+  // pieces protected from accidental drags during a live match.
   const draggable =
     state.mode === "correct" ||
-    (state.mode === "manual" && piece.color === state.side_to_move);
+    (state.mode === "manual" && piece.color === state.side_to_move) ||
+    (state.mode === "view" && piece.color !== state.our_color);
   group.setAttribute("class", `piece ${draggable ? "" : "disabled"}`);
 
   const isOurs = piece.color === state.our_color;

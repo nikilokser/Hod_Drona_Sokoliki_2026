@@ -39,15 +39,24 @@ def client():
     return TestClient(app_module.app)
 
 
-def test_move_rejected_in_view_mode(client):
+def test_move_rejected_in_view_mode_for_our_own_piece(client):
     response = client.post("/api/move", json={"from": "e2", "to": "e4"})
     assert response.status_code == 400
     assert "e2" in app_module.app_state["board"]
 
 
+def test_move_allowed_in_view_mode_for_opponent_piece(client):
+    # No automated board tracking - view mode must still let the operator
+    # record what the opponent actually did on the real field.
+    response = client.post("/api/move", json={"from": "e7", "to": "e5"})
+    assert response.status_code == 200
+    assert "e7" not in app_module.app_state["board"]
+    assert app_module.app_state["board"]["e5"]["color"] == "black"
+
+
 def test_move_applied_in_correct_mode_without_gateway_call(client):
     client.post("/api/mode", json={"mode": "correct"})
-    with patch("app.send_fly_command") as mock_send:
+    with patch("move_orchestrator.send_fly_command") as mock_send:
         response = client.post("/api/move", json={"from": "e2", "to": "e4"})
     assert response.status_code == 200
     assert "e4" in app_module.app_state["board"]
@@ -57,7 +66,7 @@ def test_move_applied_in_correct_mode_without_gateway_call(client):
 def test_manual_mode_calls_gateway_for_bound_piece(client):
     client.post("/api/mode", json={"mode": "manual"})
     with patch(
-        "app.send_fly_command", return_value={"ok": True, "response": {}}
+        "move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}
     ) as mock_send:
         response = client.post("/api/move", json={"from": "e2", "to": "e4"})
     assert response.status_code == 200
@@ -69,7 +78,7 @@ def test_manual_mode_calls_gateway_for_bound_piece(client):
 def test_manual_mode_skips_gateway_for_opponent_piece(client):
     client.post("/api/mode", json={"mode": "manual"})
     client.post("/api/side-to-move", json={"color": "black"})  # legitimately black's turn
-    with patch("app.send_fly_command") as mock_send:
+    with patch("move_orchestrator.send_fly_command") as mock_send:
         response = client.post("/api/move", json={"from": "e7", "to": "e5"})
     assert response.status_code == 200
     mock_send.assert_not_called()
@@ -78,7 +87,7 @@ def test_manual_mode_skips_gateway_for_opponent_piece(client):
 def test_manual_mode_rejects_wrong_turn_move(client):
     client.post("/api/mode", json={"mode": "manual"})
     # default side_to_move is "white"; e7 is a black piece
-    with patch("app.send_fly_command") as mock_send:
+    with patch("move_orchestrator.send_fly_command") as mock_send:
         response = client.post("/api/move", json={"from": "e7", "to": "e5"})
     assert response.status_code == 400
     assert "e7" in app_module.app_state["board"]
@@ -96,7 +105,7 @@ def test_correct_mode_allows_wrong_turn_move(client):
 def test_manual_mode_keeps_move_on_gateway_error(client):
     client.post("/api/mode", json={"mode": "manual"})
     with patch(
-        "app.send_fly_command", return_value={"ok": False, "error": "timeout"}
+        "move_orchestrator.send_fly_command", return_value={"ok": False, "error": "timeout"}
     ):
         response = client.post("/api/move", json={"from": "e2", "to": "e4"})
     assert response.status_code == 200

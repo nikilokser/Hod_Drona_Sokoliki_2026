@@ -3,17 +3,25 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from bindings import load_bindings, save_bindings
-from chat_feed import dedupe_events, load_chat_events, run_chat_feed
-from gateway_client import get_robots, send_chat_message, send_fly_command
-from match_clock import end_match, mark_turn_done, pause_match, resume_match, start_match
-from state import ALL_ROLES, apply_move, initial_board, rebind_role
-from stockfish_client import run_continuous_analysis, start_engine, stop_engine
-from ws_manager import ConnectionManager
+# Must run before the local imports below - gateway_client/move_orchestrator/
+# stockfish_client read API keys and URLs from the environment at import
+# time (module-level constants), so .env has to be loaded first or those
+# values would be captured empty.
+load_dotenv()
+
+from bindings import load_bindings, save_bindings  # noqa: E402
+from chat_feed import dedupe_events, load_chat_events, run_chat_feed  # noqa: E402
+from gateway_client import get_robots, send_chat_message  # noqa: E402
+from match_clock import end_match, mark_turn_done, pause_match, resume_match, start_match  # noqa: E402
+from move_orchestrator import execute_move, propose_and_execute_move  # noqa: E402
+from state import ALL_ROLES, apply_move, initial_board, rebind_role  # noqa: E402
+from stockfish_client import run_continuous_analysis, start_engine, stop_engine  # noqa: E402
+from ws_manager import ConnectionManager  # noqa: E402
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 
@@ -51,6 +59,7 @@ app_state: dict = {
     "side_to_move": "white",
     "stockfish_enabled": False,
     "stockfish_analysis": None,
+    "orchestrator_log": [],
 }
 
 
@@ -134,29 +143,34 @@ async def move(body: dict) -> dict:
     payload = MoveRequest.from_body(body)
 
     if app_state["mode"] == "manual":
-        moving_piece = app_state["board"].get(payload.from_square)
-        if moving_piece and moving_piece["color"] != app_state["side_to_move"]:
-            # Manual mode dispatches real robot commands - block moving the
-            # wrong side outright instead of silently sending one. "correct"
-            # mode (unrestricted) is the escape hatch for fixing the board.
-            raise HTTPException(status_code=400, detail="Сейчас не ваш ход")
+        # execute_move also dispatches the real robot command for a bound
+        # piece - shared with the AI orchestrator so both paths execute a
+        # move identically (see move_orchestrator.py).
+        result = execute_move(app_state, payload.from_square, payload.to_square)
+    else:
+        new_board, result = apply_move(
+            app_state["board"],
+            app_state["mode"],
+            payload.from_square,
+            payload.to_square,
+            our_color=app_state["our_color"],
+        )
+        if result["ok"]:
+            app_state["board"] = new_board
+            app_state["side_to_move"] = (
+                "black" if new_board[payload.to_square]["color"] == "white" else "white"
+            )
 
-    new_board, result = apply_move(
-        app_state["board"], app_state["mode"], payload.from_square, payload.to_square
-    )
     if not result["ok"]:
         raise HTTPException(status_code=400, detail=result["error"])
 
-    app_state["board"] = new_board
-    app_state["side_to_move"] = "black" if new_board[payload.to_square]["color"] == "white" else "white"
-
-    if app_state["mode"] == "manual" and result["moved_robot_id"]:
-        result["gateway_result"] = send_fly_command(
-            result["moved_robot_id"], payload.to_square
-        )
-
     await manager.broadcast(app_state)
     return {"state": app_state, "result": result}
+
+
+@app.post("/api/orchestrator/propose-move")
+async def propose_move() -> dict:
+    return await propose_and_execute_move(app_state, manager.broadcast)
 
 
 class ChatSendRequest(BaseModel):

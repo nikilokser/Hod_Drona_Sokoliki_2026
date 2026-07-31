@@ -5,3 +5,6 @@ __pycache__/
 .pytest_cache/
 .venv/
 web/backend/config/chat_history.jsonl
+.env
+*.env
+!.env.example

@@ -408,6 +408,39 @@ select {
   padding: 4px 6px;
 }
 
+.orchestrator-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 10px;
+}
+
+.orchestrator-log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.orchestrator-round {
+  background: #2a2f3d;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 0.8rem;
+}
+
+.orchestrator-round-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.orchestrator-attempt {
+  color: #9aa0ad;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
 .message-bar {
   max-width: 640px;
   padding: 10px 16px;

@@ -48,6 +48,31 @@ def send_chat_message(text: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def ask_robots(robot_ids: list[str], text: str, timeout_sec: float = 30.0) -> dict:
+    """Send the same text to several robots and wait for their answers
+    (used for move-negotiation voting). Unlike send_fly_command, this blocks
+    for up to timeout_sec per robot - Gateway answers each target
+    independently, so one non-responding/offline robot doesn't hold up the
+    others (see sverk_ai_communication_server's dispatch code)."""
+
+    payload = {
+        "robot_ids": robot_ids,
+        "text": text,
+        "wait_for_answer": True,
+        "answer_timeout_sec": timeout_sec,
+    }
+    try:
+        response = httpx.post(
+            f"{GATEWAY_BASE_URL}/api/v1/messages",
+            json=payload,
+            timeout=timeout_sec + 5.0,
+        )
+        response.raise_for_status()
+        return {"ok": True, "response": response.json()}
+    except httpx.HTTPError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def get_robots() -> dict:
     """Fetch the robot registry from the Gateway. Also doubles as the
     Gateway connectivity check for the UI - {"ok": False} means the

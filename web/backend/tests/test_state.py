@@ -84,16 +84,24 @@ def test_initial_board_flips_for_black():
     assert "robot_id" not in board["e1"]
 
 
-def test_view_mode_rejects_move():
+def test_view_mode_rejects_our_own_piece():
     board = initial_board("white", BINDINGS)
-    new_board, result = apply_move(board, "view", "e2", "e4")
+    new_board, result = apply_move(board, "view", "e2", "e4", our_color="white")
     assert result["ok"] is False
     assert new_board == board
 
 
+def test_view_mode_allows_opponent_piece():
+    board = initial_board("white", BINDINGS)
+    new_board, result = apply_move(board, "view", "e7", "e5", our_color="white")
+    assert result["ok"] is True
+    assert "e7" not in new_board
+    assert new_board["e5"]["color"] == "black"
+
+
 def test_correct_mode_moves_piece():
     board = initial_board("white", BINDINGS)
-    new_board, result = apply_move(board, "correct", "e2", "e4")
+    new_board, result = apply_move(board, "correct", "e2", "e4", our_color="white")
     assert result["ok"] is True
     assert result["captured"] is False
     assert "e2" not in new_board
@@ -103,7 +111,7 @@ def test_correct_mode_moves_piece():
 def test_correct_mode_captures_opposite_color():
     board = initial_board("white", BINDINGS)
     board["e5"] = {"color": "black", "piece": "pawn"}
-    new_board, result = apply_move(board, "correct", "e2", "e5")
+    new_board, result = apply_move(board, "correct", "e2", "e5", our_color="white")
     assert result["ok"] is True
     assert result["captured"] is True
     assert new_board["e5"]["color"] == "white"
@@ -111,20 +119,20 @@ def test_correct_mode_captures_opposite_color():
 
 def test_correct_mode_rejects_same_color_target():
     board = initial_board("white", BINDINGS)
-    new_board, result = apply_move(board, "correct", "a1", "b1")
+    new_board, result = apply_move(board, "correct", "a1", "b1", our_color="white")
     assert result["ok"] is False
     assert new_board == board
 
 
 def test_correct_mode_rejects_empty_from():
     board = initial_board("white", BINDINGS)
-    new_board, result = apply_move(board, "correct", "e4", "e5")
+    new_board, result = apply_move(board, "correct", "e4", "e5", our_color="white")
     assert result["ok"] is False
 
 
 def test_manual_mode_moves_and_reports_robot_id():
     board = initial_board("white", BINDINGS)
-    new_board, result = apply_move(board, "manual", "e2", "e4")
+    new_board, result = apply_move(board, "manual", "e2", "e4", our_color="white")
     assert result["ok"] is True
     assert result["moved_robot_id"] == "peshka-05"
     assert new_board["e4"]["robot_id"] == "peshka-05"
@@ -132,6 +140,6 @@ def test_manual_mode_moves_and_reports_robot_id():
 
 def test_manual_mode_reports_no_robot_id_for_opponent_piece():
     board = initial_board("white", BINDINGS)
-    new_board, result = apply_move(board, "manual", "e7", "e5")
+    new_board, result = apply_move(board, "manual", "e7", "e5", our_color="white")
     assert result["ok"] is True
     assert result["moved_robot_id"] is None

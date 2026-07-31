@@ -73,6 +73,50 @@ observed before timeout"`, хотя дрон физически садился �
 
 Файл: `ros1_ws/src/drone_agent_mcp_ros1/src/drone_agent_mcp_ros1/drone_ros_bridge.py`
 
+## Голосование по предложенному ходу — конфиг, не патч кода
+
+См. дизайн `docs/superpowers/specs/2026-07-31-ai-move-negotiation-design.md`.
+Веб-морда (`move_orchestrator.py`) рассылает предложенный ход агентам фигур с
+префиксом `[ГОЛОСОВАНИЕ]` и ждёт ответ в формате `ДА:`/`НЕТ:`/`ХОД: <откуда>-
+<куда>:`. Это решается **конфигом**, без изменения кода вендора — через уже
+существующий хук `AGENT_PROMPT_FILE` (`agent_text_node.py::system_prompt()`),
+текст для дописывания — `agent_prompt_voting_addition.md` рядом с этим файлом.
+
+**Важное условие, которое нужно проверить перед раскаткой на конкретном
+дроне: голосование работает только в режиме `agent` (настоящий LLM,
+`drone_agent_mcp_ros1`), а не в `pseudo` (`drone_pseudo_agent_ros1`).**
+У псевдо-агента нет LLM вообще — `command_parser.py` разбирает текст
+регулярками под конкретный список команд полёта, никакой ветки для
+свободного текста вроде `[ГОЛОСОВАНИЕ] ...` там нет, ответ будет ошибкой
+парсинга. На момент патчей 0001-0003 и `sverk-8`, и `sverk-108` работали
+именно в `pseudo`-режиме (`DRONE_AGENT_MODE=pseudo`, видно по
+`drone_pseudo_agent_stack.launch` в выводе `systemctl status`) — переключение
+на `agent` для голосования ещё не сделано ни на одном дроне.
+
+Шаги для конкретного дрона (не выполнялись автоматически, нужно
+подтверждение перед раскаткой на живом железе):
+
+1. Проверить/выставить в systemd override (`/etc/systemd/system/sverk-drone-agent.service.d/override.conf`):
+   `DRONE_AGENT_MODE=agent` (сейчас `pseudo`), `OPENAI_BASE_URL=https://ai.sverk.io/v1`,
+   `OPENAI_MODEL=<слабая модель, например gemma-4-31b>`, `OPENAI_API_KEY=<ключ шлюза>`.
+2. Найти/создать `config/agent_prompt.md` в
+   `~/catkin_ws/src/sverk_drone_agent/ros1_ws/src/drone_agent_mcp_ros1/` и
+   **дописать** в конец содержимое `agent_prompt_voting_addition.md`.
+3. Убедиться, что `AGENT_PROMPT_FILE` в override указывает на этот файл
+   (по умолчанию пусто — кастомизация не подключена, пока явно не задано).
+4. `rm -rf .../drone_agent_mcp_ros1/__pycache__` (если есть), `sudo systemctl daemon-reload`,
+   `sudo systemctl restart sverk-drone-agent.service`.
+5. Проверить тем же способом, что и после патчей 0001-0003 (см. «Быстрая
+   проверка после рестарта» ниже) плюс отдельно голосовым сообщением
+   вручную через `rostopic pub` с текстом `[ГОЛОСОВАНИЕ] ...` — ожидается
+   ответ строго `ДА:`/`НЕТ:`/`ХОД: ...`, без вызова инструментов полёта.
+
+Переключение в `agent`-режим меняет и обычные полётные команды: они тоже
+пойдут через реальный LLM вместо детерминированного `command_parser`, так что
+это не изолированное изменение только для голосования — стоит перепроверить
+обычный сценарий взлёт/перелёт/посадка после переключения, а не только
+голосование.
+
 ## Куда раскатывать
 
 Роботы из `sverk_ai_communication_server/config/fleet.yaml` типа `ros1_drone`:
