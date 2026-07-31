@@ -26,7 +26,8 @@ from match_clock import (  # noqa: E402
     sync_active_color,
 )
 from move_orchestrator import execute_move, propose_and_execute_move  # noqa: E402
-from state import ALL_ROLES, apply_move, initial_board, rebind_role  # noqa: E402
+from peshka_client import load_peshka_ips  # noqa: E402
+from state import ALL_ROLES, apply_move, delete_piece, initial_board, rebind_role  # noqa: E402
 from stockfish_client import run_continuous_analysis, start_engine, stop_engine  # noqa: E402
 from ws_manager import ConnectionManager  # noqa: E402
 
@@ -70,6 +71,9 @@ app_state: dict = {
     "pending_robot_moves": {},
     "robot_alerts": [],
     "last_move": None,
+    "peshka_ips": load_peshka_ips(),
+    "peshka_headings": {},
+    "captured_pieces": [],
 }
 
 
@@ -122,6 +126,7 @@ async def set_our_color(payload: ColorRequest) -> dict:
 async def reset_board() -> dict:
     app_state["board"] = initial_board(app_state["our_color"], app_state["bindings"])
     app_state["last_move"] = None
+    app_state["captured_pieces"] = []
     await manager.broadcast(app_state)
     return app_state
 
@@ -177,6 +182,8 @@ async def move(body: dict) -> dict:
                 "color": new_board[payload.to_square]["color"],
                 "piece": new_board[payload.to_square]["piece"],
             }
+            if result.get("captured_piece"):
+                app_state.setdefault("captured_pieces", []).append(result["captured_piece"])
             if app_state["mode"] == "view":
                 # "correct" is a pure board-state fix (drag either side
                 # freely, no legality/turn check) - not a real move, so it
@@ -189,6 +196,25 @@ async def move(body: dict) -> dict:
 
     if not result["ok"]:
         raise HTTPException(status_code=400, detail=result["error"])
+
+    await manager.broadcast(app_state)
+    return {"state": app_state, "result": result}
+
+
+class DeletePieceRequest(BaseModel):
+    square: str
+
+
+@app.post("/api/delete-piece")
+async def delete_piece_endpoint(payload: DeletePieceRequest) -> dict:
+    new_board, result = delete_piece(
+        app_state["board"], app_state["mode"], payload.square, our_color=app_state["our_color"]
+    )
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    app_state["board"] = new_board
+    app_state.setdefault("captured_pieces", []).append(result["removed_piece"])
 
     await manager.broadcast(app_state)
     return {"state": app_state, "result": result}

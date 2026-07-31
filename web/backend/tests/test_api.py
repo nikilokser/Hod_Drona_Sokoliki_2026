@@ -31,6 +31,7 @@ def reset_state(monkeypatch):
     }
     app_module.app_state["side_to_move"] = "white"
     app_module.app_state["stockfish_enabled"] = False
+    app_module.app_state["captured_pieces"] = []
     yield
 
 
@@ -65,17 +66,19 @@ def test_move_applied_in_correct_mode_without_gateway_call(client):
 
 def test_manual_mode_calls_gateway_for_bound_piece(client):
     # Bind explicitly instead of relying on whatever robot_id happens to be
-    # in the real config/bindings.json for pawn_5 (e2's pawn) right now -
-    # that file reflects live bindings made through the running UI and
-    # drifts independently of this test.
-    client.post("/api/bindings", json={"role": "pawn_5", "robot_id": "peshka-99"})
+    # in the real config/bindings.json right now - that file reflects live
+    # bindings made through the running UI and drifts independently of this
+    # test. A non-pawn piece specifically: pawns are dispatched through
+    # peshka_client (direct HTTP to the robot's own IP), not the Gateway -
+    # see test_move_orchestrator.py for that path.
+    client.post("/api/bindings", json={"role": "knight_1", "robot_id": "drone-99"})
     client.post("/api/mode", json={"mode": "manual"})
     with patch(
         "move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}
     ) as mock_send:
-        response = client.post("/api/move", json={"from": "e2", "to": "e4"})
+        response = client.post("/api/move", json={"from": "b1", "to": "c3"})
     assert response.status_code == 200
-    mock_send.assert_called_once_with("peshka-99", "e4")
+    mock_send.assert_called_once_with("drone-99", "c3")
     body = response.json()
     assert body["result"]["gateway_result"] == {"ok": True, "response": {}}
 
@@ -112,6 +115,55 @@ def test_reset_clears_last_move(client):
     assert app_module.app_state["last_move"] is not None
     client.post("/api/reset")
     assert app_module.app_state["last_move"] is None
+
+
+# --- captured-pieces tracking and piece deletion -----------------------------
+
+
+def test_capturing_move_records_captured_piece(client):
+    client.post("/api/mode", json={"mode": "correct"})
+    client.post("/api/move", json={"from": "e2", "to": "e7"})  # white pawn takes black pawn
+    assert app_module.app_state["captured_pieces"] == [{"color": "black", "piece": "pawn"}]
+
+
+def test_non_capturing_move_does_not_record_anything(client):
+    client.post("/api/mode", json={"mode": "correct"})
+    client.post("/api/move", json={"from": "e2", "to": "e4"})
+    assert app_module.app_state["captured_pieces"] == []
+
+
+def test_reset_clears_captured_pieces(client):
+    client.post("/api/mode", json={"mode": "correct"})
+    client.post("/api/move", json={"from": "e2", "to": "e7"})
+    assert app_module.app_state["captured_pieces"] != []
+    client.post("/api/reset")
+    assert app_module.app_state["captured_pieces"] == []
+
+
+def test_delete_piece_removes_it_and_records_capture(client):
+    client.post("/api/mode", json={"mode": "correct"})
+    response = client.post("/api/delete-piece", json={"square": "e7"})
+    assert response.status_code == 200
+    assert "e7" not in app_module.app_state["board"]
+    assert app_module.app_state["captured_pieces"] == [{"color": "black", "piece": "pawn"}]
+
+
+def test_delete_piece_rejected_in_view_mode_for_own_piece(client):
+    response = client.post("/api/delete-piece", json={"square": "e2"})
+    assert response.status_code == 400
+    assert "e2" in app_module.app_state["board"]
+    assert app_module.app_state["captured_pieces"] == []
+
+
+def test_delete_piece_allowed_in_view_mode_for_opponent_piece(client):
+    response = client.post("/api/delete-piece", json={"square": "e7"})
+    assert response.status_code == 200
+    assert "e7" not in app_module.app_state["board"]
+
+
+def test_delete_piece_rejects_empty_square(client):
+    response = client.post("/api/delete-piece", json={"square": "e4"})
+    assert response.status_code == 400
 
 
 def test_view_mode_move_auto_advances_running_clock(client):
@@ -159,17 +211,18 @@ def test_manual_mode_allows_moving_any_piece_regardless_of_turn(client):
     # "Manual" is a debug mode: any piece can be dragged no matter whose
     # turn it officially is (per user request) - move our own white piece
     # while side_to_move says black, and it still goes through and still
-    # dispatches to the robot.
-    client.post("/api/bindings", json={"role": "pawn_5", "robot_id": "peshka-99"})
+    # dispatches to the robot. Non-pawn piece: pawns are dispatched through
+    # peshka_client, not the Gateway.
+    client.post("/api/bindings", json={"role": "knight_1", "robot_id": "drone-99"})
     client.post("/api/mode", json={"mode": "manual"})
     client.post("/api/side-to-move", json={"color": "black"})
     with patch(
         "move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}
     ) as mock_send:
-        response = client.post("/api/move", json={"from": "e2", "to": "e4"})
+        response = client.post("/api/move", json={"from": "b1", "to": "c3"})
     assert response.status_code == 200
-    assert "e4" in app_module.app_state["board"]
-    mock_send.assert_called_once_with("peshka-99", "e4")
+    assert "c3" in app_module.app_state["board"]
+    mock_send.assert_called_once_with("drone-99", "c3")
 
 
 def test_correct_mode_allows_wrong_turn_move(client):

@@ -176,6 +176,7 @@ function render(state) {
   renderOrchestratorPanel(state);
   renderRobotAlerts(state);
   renderLastMoveBanner(state);
+  renderCapturedPanel(state);
 
   if (drag) {
     // A drag gesture is in progress on the board - rebuilding the SVG now
@@ -259,6 +260,40 @@ function renderLastMoveBanner(state) {
   banner.textContent = isOurs
     ? `✓ Наш ход выполнен: ${pieceName} ${move.from} → ${move.to}`
     : `Ход соперника: ${pieceName} ${move.from} → ${move.to}`;
+}
+
+const capturedTheirsEl = document.getElementById("captured-theirs");
+const capturedOursEl = document.getElementById("captured-ours");
+
+// Piece order pieces are traditionally displayed in a captured-material
+// tally (highest value first) - purely cosmetic grouping, not a score.
+const CAPTURED_SORT_ORDER = ["queen", "rook", "bishop", "knight", "pawn"];
+
+function renderCapturedPanel(state) {
+  const captured = state.captured_pieces || [];
+  // Grouped by "ours" vs "theirs" (our_color perspective) rather than raw
+  // white/black, so the panel reads correctly regardless of which side we
+  // are playing - "Взято у соперника" is always the opponent's material we
+  // captured, "Потеряно" is always our own pieces the opponent captured.
+  const theirs = captured.filter((p) => p.color !== state.our_color);
+  const ours = captured.filter((p) => p.color === state.our_color);
+  renderCapturedRow(capturedTheirsEl, theirs);
+  renderCapturedRow(capturedOursEl, ours);
+}
+
+function renderCapturedRow(container, pieces) {
+  container.innerHTML = "";
+  const sorted = [...pieces].sort(
+    (a, b) => CAPTURED_SORT_ORDER.indexOf(a.piece) - CAPTURED_SORT_ORDER.indexOf(b.piece)
+  );
+  for (const p of sorted) {
+    const img = document.createElement("img");
+    const colorCode = p.color === "white" ? "w" : "b";
+    img.src = `/pieces/${pieceSet}/${colorCode}${PIECE_CODE[p.piece]}.svg`;
+    img.alt = `${p.color} ${p.piece}`;
+    img.className = "captured-piece-icon";
+    container.appendChild(img);
+  }
 }
 
 function renderAnalysisPanel(state) {
@@ -894,9 +929,41 @@ function renderPiece(square, piece, state) {
 
   if (draggable) {
     group.addEventListener("pointerdown", onPointerDown);
+    // Same permission rule as dragging (view: opponent pieces only;
+    // correct/manual: unrestricted) - right-click is the affordance for
+    // removing a piece entirely (a capture the judge physically took off
+    // the field, or a board-state correction with no destination square).
+    group.addEventListener("contextmenu", onPieceContextMenu);
   }
 
   return group;
+}
+
+async function onPieceContextMenu(evt) {
+  evt.preventDefault();
+  const square = evt.currentTarget.dataset.square;
+  const piece = currentState.board[square];
+  if (!piece) return;
+
+  const pieceName = SQUARE_LABEL_RU[piece.piece] || piece.piece;
+  const confirmed = await confirmDialog(`Удалить фигуру с клетки ${square} (${pieceName})?`);
+  if (!confirmed) return;
+
+  try {
+    const response = await fetch("/api/delete-piece", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ square }),
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      showMessage(body.detail || "Не удалось удалить фигуру", "error");
+      return;
+    }
+    clearMessage();
+  } catch (err) {
+    showMessage(`Сетевая ошибка: ${err}`, "error");
+  }
 }
 
 function onPointerDown(evt) {
@@ -1121,7 +1188,10 @@ pieceSetSelect.value = pieceSet;
 pieceSetSelect.addEventListener("change", () => {
   pieceSet = pieceSetSelect.value;
   localStorage.setItem(PIECE_SET_STORAGE_KEY, pieceSet);
-  if (currentState) renderBoard(currentState); // repaint pieces with the new set immediately
+  if (currentState) {
+    renderBoard(currentState); // repaint pieces with the new set immediately
+    renderCapturedPanel(currentState);
+  }
 });
 
 tabButtons.forEach((button) => {

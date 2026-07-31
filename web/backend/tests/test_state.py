@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from state import apply_move, initial_board, rebind_role
+from state import apply_move, delete_piece, initial_board, rebind_role
 
 BINDINGS = {
     "king": "drone-01",
@@ -143,3 +143,72 @@ def test_manual_mode_reports_no_robot_id_for_opponent_piece():
     new_board, result = apply_move(board, "manual", "e7", "e5", our_color="white")
     assert result["ok"] is True
     assert result["moved_robot_id"] is None
+
+
+def test_apply_move_reports_captured_piece_details():
+    board = initial_board("white", BINDINGS)
+    board["e5"] = {"color": "black", "piece": "pawn"}
+    new_board, result = apply_move(board, "correct", "e2", "e5", our_color="white")
+    assert result["ok"] is True
+    assert result["captured_piece"] == {"color": "black", "piece": "pawn"}
+
+
+def test_apply_move_reports_no_captured_piece_when_target_empty():
+    board = initial_board("white", BINDINGS)
+    new_board, result = apply_move(board, "correct", "e2", "e4", our_color="white")
+    assert result["ok"] is True
+    assert result["captured_piece"] is None
+
+
+# --- delete_piece -----------------------------------------------------------
+
+
+def test_delete_piece_removes_from_board_in_correct_mode():
+    board = initial_board("white", BINDINGS)
+    new_board, result = delete_piece(board, "correct", "e7", our_color="white")
+    assert result["ok"] is True
+    assert result["removed_piece"] == {"color": "black", "piece": "pawn"}
+    assert "e7" not in new_board
+
+
+def test_delete_piece_removes_our_own_piece_in_correct_mode():
+    board = initial_board("white", BINDINGS)
+    new_board, result = delete_piece(board, "correct", "e2", our_color="white")
+    assert result["ok"] is True
+    assert result["removed_piece"] == {"color": "white", "piece": "pawn"}
+    assert "e2" not in new_board
+
+
+def test_delete_piece_removes_any_piece_in_manual_mode():
+    board = initial_board("white", BINDINGS)
+    new_board, result = delete_piece(board, "manual", "e2", our_color="white")
+    assert result["ok"] is True
+    assert "e2" not in new_board
+
+
+def test_delete_piece_view_mode_rejects_our_own_piece():
+    board = initial_board("white", BINDINGS)
+    new_board, result = delete_piece(board, "view", "e2", our_color="white")
+    assert result["ok"] is False
+    assert new_board == board
+    assert "e2" in new_board
+
+
+def test_delete_piece_view_mode_allows_opponent_piece():
+    board = initial_board("white", BINDINGS)
+    new_board, result = delete_piece(board, "view", "e7", our_color="white")
+    assert result["ok"] is True
+    assert "e7" not in new_board
+
+
+def test_delete_piece_rejects_empty_square():
+    board = initial_board("white", BINDINGS)
+    new_board, result = delete_piece(board, "correct", "e4", our_color="white")
+    assert result["ok"] is False
+    assert new_board == board
+
+
+def test_delete_piece_rejects_unknown_mode():
+    board = initial_board("white", BINDINGS)
+    new_board, result = delete_piece(board, "bogus", "e2", our_color="white")
+    assert result["ok"] is False

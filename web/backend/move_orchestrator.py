@@ -33,6 +33,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from move_validator import validate_move  # noqa: E402 (see sys.path setup above)
 
+import peshka_client
 from gateway_client import ask_robots, get_robots, send_fly_command
 from match_clock import sync_active_color
 from state import apply_move
@@ -284,6 +285,8 @@ def execute_move(app_state: dict, from_sq: str, to_sq: str) -> dict:
         "color": new_board[to_sq]["color"],
         "piece": new_board[to_sq]["piece"],
     }
+    if result.get("captured_piece"):
+        app_state.setdefault("captured_pieces", []).append(result["captured_piece"])
 
     if result["moved_robot_id"]:
         robot_id = result["moved_robot_id"]

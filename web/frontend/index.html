@@ -8,9 +8,17 @@
 <body>
   <div class="layout">
     <header class="topbar">
-      <div class="brand">
-        <span class="brand-logo" aria-hidden="true">🦅</span>
-        <span class="brand-name">Соколики</span>
+      <div class="topbar-top">
+        <div class="brand">
+          <span class="brand-logo" aria-hidden="true">🦅</span>
+          <span class="brand-name">Соколики</span>
+        </div>
+
+        <div class="topbar-status">
+          <span class="status-pill" id="connection-status">подключение…</span>
+          <span class="status-pill" id="gateway-status">Gateway: …</span>
+          <button id="theme-toggle-button" class="icon-button" type="button" aria-label="Переключить тему">🌙</button>
+        </div>
       </div>
 
       <div class="topbar-controls">
@@ -39,12 +47,6 @@
           </select>
         </label>
       </div>
-
-      <div class="topbar-status">
-        <span class="status-pill" id="connection-status">подключение…</span>
-        <span class="status-pill" id="gateway-status">Gateway: …</span>
-        <button id="theme-toggle-button" class="icon-button" type="button" aria-label="Переключить тему">🌙</button>
-      </div>
     </header>
 
     <div id="robot-alerts" class="robot-alerts"></div>
@@ -67,6 +69,17 @@
         <button id="turn-done-button" type="button" disabled>Ход сделан</button>
         <button id="match-pause-button" type="button" disabled>Пауза</button>
         <button id="match-end-button" class="danger-button" type="button" disabled>Завершить матч</button>
+      </div>
+    </div>
+
+    <div class="captured-panel">
+      <div class="captured-group">
+        <span class="captured-label">Взято у соперника</span>
+        <div class="captured-icons" id="captured-theirs"></div>
+      </div>
+      <div class="captured-group">
+        <span class="captured-label">Потеряно</span>
+        <div class="captured-icons" id="captured-ours"></div>
       </div>
     </div>
 

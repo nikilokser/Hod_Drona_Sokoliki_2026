@@ -164,5 +164,40 @@ def apply_move(
     return new_board, {
         "ok": True,
         "captured": target is not None,
+        "captured_piece": {"color": target["color"], "piece": target["piece"]} if target else None,
         "moved_robot_id": moving.get("robot_id"),
+    }
+
+
+def delete_piece(board: dict, mode: str, square: str, our_color: str) -> tuple[dict, dict]:
+    """Removes a piece from the board entirely - for recording a capture
+    where the judge physically takes the piece off the field (no
+    corresponding destination square the way apply_move has), or a
+    board-state correction that needs a piece gone rather than relocated.
+
+    Same mode permission rule as apply_move: "view" only allows removing
+    the opponent's pieces (there is no automated tracking of the real
+    board, so this doubles as the way to record an opponent's capture);
+    "correct"/"manual" are unrestricted, matching apply_move's own rule.
+    """
+
+    if mode not in ("view", "correct", "manual"):
+        return board, {"ok": False, "error": f"неизвестный режим: {mode}"}
+
+    occupant = board.get(square)
+    if occupant is None:
+        return board, {"ok": False, "error": f"на клетке {square} нет фигуры"}
+
+    if mode == "view" and occupant["color"] == our_color:
+        return board, {
+            "ok": False,
+            "error": "режим наблюдения — можно удалять только фигуры соперника",
+        }
+
+    new_board = dict(board)
+    del new_board[square]
+
+    return new_board, {
+        "ok": True,
+        "removed_piece": {"color": occupant["color"], "piece": occupant["piece"]},
     }

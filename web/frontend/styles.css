@@ -82,13 +82,23 @@ body {
 
 .topbar {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 20px;
+  flex-direction: column;
+  gap: 10px;
   background: var(--surface);
   padding: 10px 20px;
   border-radius: 12px;
   box-shadow: var(--shadow);
+}
+
+/* Brand + connection status always share one row, regardless of how many
+   chips are in .topbar-controls below - previously they were flex siblings
+   in a single wrapping row, so adding a 3rd chip (piece set) could push the
+   status pills onto their own line instead of staying pinned top-right. */
+.topbar-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
 }
 
 .brand {
@@ -97,7 +107,6 @@ body {
   gap: 8px;
   font-weight: 700;
   letter-spacing: 0.02em;
-  margin-right: auto;
 }
 
 .brand-logo {
@@ -284,6 +293,47 @@ select {
   flex-wrap: wrap;
   gap: 10px;
   margin-left: auto;
+}
+
+/* Captured-pieces tally */
+
+.captured-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 8px 20px;
+  box-shadow: var(--shadow);
+}
+
+.captured-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+}
+
+.captured-label {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.captured-icons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.captured-piece-icon {
+  width: 22px;
+  height: 22px;
+  margin-left: -4px;
+}
+
+.captured-piece-icon:first-child {
+  margin-left: 0;
 }
 
 /* Board + eval bar + chat row */

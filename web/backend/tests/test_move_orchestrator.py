@@ -315,6 +315,21 @@ def test_execute_move_allows_out_of_turn_move():
     mock_send.assert_called_once_with("drone-06", "f3")
 
 
+def test_execute_move_records_captured_piece_in_app_state():
+    app_state = make_app_state()
+    app_state["board"]["f3"] = {"color": "black", "piece": "pawn"}
+    with patch("move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}):
+        move_orchestrator.execute_move(app_state, "g1", "f3")
+    assert app_state["captured_pieces"] == [{"color": "black", "piece": "pawn"}]
+
+
+def test_execute_move_does_not_record_capture_on_non_capturing_move():
+    app_state = make_app_state()
+    with patch("move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}):
+        move_orchestrator.execute_move(app_state, "g1", "f3")
+    assert app_state.get("captured_pieces", []) == []
+
+
 # --- propose_and_execute_move (full round) --------------------------------------------------------
 
 
@@ -423,14 +438,21 @@ async def test_propose_and_execute_move_pawn_proposal_accepted(monkeypatch):
     )
     monkeypatch.setattr(move_orchestrator, "compute_quorum", lambda app_state: [])
 
-    with patch(
-        "move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}
-    ) as mock_send:
+    # Pawns are dispatched through peshka_client.dispatch_pawn_move (direct
+    # HTTP to the robot's own IP), never through the Gateway.
+    with (
+        patch(
+            "move_orchestrator.dispatch_pawn_move",
+            return_value={"ok": True, "resulting_heading_deg": 0.0},
+        ) as mock_dispatch,
+        patch("move_orchestrator.send_fly_command") as mock_send,
+    ):
         result = await move_orchestrator.propose_and_execute_move(app_state, _noop_broadcast)
 
     assert result["ok"] is True
     assert app_state["board"]["e4"]["piece"] == "pawn"
-    mock_send.assert_called_once_with("peshka-05", "e4")
+    mock_dispatch.assert_called_once_with(app_state, "peshka-05", "e2", "e4")
+    mock_send.assert_not_called()
     assert len(result["round"]["attempts"]) == 1
 
 
@@ -578,3 +600,74 @@ def test_execute_move_does_not_track_when_gateway_rejects_without_message_id():
         move_orchestrator.execute_move(app_state, "g1", "f3")
 
     assert app_state.get("pending_robot_moves", {}) == {}
+
+
+# --- pawn moves dispatch through peshka_client, not the Gateway ---------------------
+
+
+def test_execute_move_routes_pawn_through_peshka_client():
+    app_state = make_app_state(peshka_ips={"peshka-05": "10.0.0.5"})
+    with (
+        patch(
+            "move_orchestrator.peshka_client.move_pawn_to_cell",
+            return_value={"ok": True, "resulting_heading_deg": 0.0},
+        ) as mock_move,
+        patch("move_orchestrator.send_fly_command") as mock_send,
+    ):
+        result = move_orchestrator.execute_move(app_state, "e2", "e4")
+
+    assert result["ok"] is True
+    assert result["gateway_result"] == {"ok": True, "resulting_heading_deg": 0.0}
+    mock_move.assert_called_once_with("10.0.0.5", "e2", "e4", 0.0)
+    mock_send.assert_not_called()
+    assert app_state["peshka_headings"]["peshka-05"] == 0.0
+
+
+def test_dispatch_pawn_move_uses_color_based_default_heading():
+    app_state = make_app_state(our_color="black", peshka_ips={"peshka-05": "10.0.0.5"})
+    with patch(
+        "move_orchestrator.peshka_client.move_pawn_to_cell",
+        return_value={"ok": True, "resulting_heading_deg": 180.0},
+    ) as mock_move:
+        move_orchestrator.dispatch_pawn_move(app_state, "peshka-05", "e7", "e5")
+
+    # Black's default starting heading is 180 deg (see peshka_client.initial_heading_deg).
+    mock_move.assert_called_once_with("10.0.0.5", "e7", "e5", 180.0)
+
+
+def test_dispatch_pawn_move_reuses_previously_tracked_heading():
+    app_state = make_app_state(
+        peshka_ips={"peshka-05": "10.0.0.5"}, peshka_headings={"peshka-05": 315.0}
+    )
+    with patch(
+        "move_orchestrator.peshka_client.move_pawn_to_cell",
+        return_value={"ok": True, "resulting_heading_deg": 270.0},
+    ) as mock_move:
+        move_orchestrator.dispatch_pawn_move(app_state, "peshka-05", "d5", "c5")
+
+    mock_move.assert_called_once_with("10.0.0.5", "d5", "c5", 315.0)
+    assert app_state["peshka_headings"]["peshka-05"] == 270.0
+
+
+def test_dispatch_pawn_move_missing_ip_returns_clean_error_without_network_call():
+    app_state = make_app_state(peshka_ips={})
+    with patch("move_orchestrator.peshka_client.move_pawn_to_cell") as mock_move:
+        result = move_orchestrator.dispatch_pawn_move(app_state, "peshka-05", "e2", "e4")
+
+    assert result["ok"] is False
+    assert "peshka-05" in result["error"]
+    mock_move.assert_not_called()
+
+
+def test_dispatch_pawn_move_failure_does_not_update_heading():
+    app_state = make_app_state(
+        peshka_ips={"peshka-05": "10.0.0.5"}, peshka_headings={"peshka-05": 90.0}
+    )
+    with patch(
+        "move_orchestrator.peshka_client.move_pawn_to_cell",
+        return_value={"ok": False, "error": "нет связи"},
+    ):
+        result = move_orchestrator.dispatch_pawn_move(app_state, "peshka-05", "e2", "e4")
+
+    assert result["ok"] is False
+    assert app_state["peshka_headings"]["peshka-05"] == 90.0
