@@ -282,6 +282,34 @@ def test_call_strong_model_bad_json_content(monkeypatch):
     assert result["ok"] is False
 
 
+def test_call_strong_model_empty_content_reports_finish_reason(monkeypatch):
+    # Observed live 2026-08-02: a reasoning model can burn its whole token
+    # budget on reasoning_content and get cut off before ever writing to
+    # content - message.content comes back "", not missing.
+    monkeypatch.setattr(move_orchestrator, "STRONG_MODEL_API_KEY", "test-key")
+    mock_response = MagicMock()
+    mock_response.raise_for_status.return_value = None
+    mock_response.json.return_value = {
+        "choices": [{"finish_reason": "length", "message": {"content": ""}}]
+    }
+    with patch("move_orchestrator.httpx.post", return_value=mock_response):
+        result = move_orchestrator.call_strong_model("fen", "white")
+    assert result["ok"] is False
+    assert "length" in result["error"]
+
+
+def test_call_strong_model_sends_max_tokens(monkeypatch):
+    monkeypatch.setattr(move_orchestrator, "STRONG_MODEL_API_KEY", "test-key")
+    mock_response = MagicMock()
+    mock_response.raise_for_status.return_value = None
+    mock_response.json.return_value = {
+        "choices": [{"message": {"content": '{"from": "g1", "to": "f3", "reasoning": ""}'}}]
+    }
+    with patch("move_orchestrator.httpx.post", return_value=mock_response) as mock_post:
+        move_orchestrator.call_strong_model("fen", "white")
+    assert mock_post.call_args.kwargs["json"]["max_tokens"] == 4000
+
+
 def test_call_strong_model_network_error(monkeypatch):
     monkeypatch.setattr(move_orchestrator, "STRONG_MODEL_API_KEY", "test-key")
     with patch("move_orchestrator.httpx.post", side_effect=httpx.ConnectError("down")):

@@ -219,6 +219,15 @@ def call_strong_model(
         "model": STRONG_MODEL_NAME,
         "messages": _build_strong_model_messages(fen, our_color, feedback, context),
         "temperature": 0.2,
+        # deepseek-v4-pro is a reasoning model - observed live 2026-08-02
+        # spending ~1200 tokens on reasoning_content before ever writing the
+        # actual JSON answer to content. Without an explicit max_tokens the
+        # provider's own default sometimes wasn't enough room for both,
+        # silently truncating mid-reasoning and returning an EMPTY content
+        # field (parsed as "Некорректный ответ модели: Expecting value..."
+        # here) - not a network problem, a token-budget one. 4000 leaves
+        # generous headroom above the ~1300 observed for a normal answer.
+        "max_tokens": 4000,
     }
     try:
         response = httpx.post(
@@ -243,7 +252,15 @@ def call_strong_model(
         return {"ok": False, "error": str(exc)}
 
     try:
-        content = data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        content = choice["message"]["content"]
+        if not content:
+            # Distinguishes "truncated before writing content" (see
+            # max_tokens above) from a genuinely malformed/empty response -
+            # finish_reason "length" points straight at the token-budget
+            # cause instead of leaving it looking like a random parse error.
+            finish_reason = choice.get("finish_reason", "?")
+            return {"ok": False, "error": f"Модель вернула пустой ответ (finish_reason={finish_reason})"}
         parsed = json.loads(content)
         return {
             "ok": True,
