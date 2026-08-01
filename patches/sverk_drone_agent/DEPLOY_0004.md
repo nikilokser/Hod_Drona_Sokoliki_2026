@@ -1,0 +1,153 @@
+# Раскатка патча 0004 (голосование) на остальные дроны
+
+Пошаговая инструкция для sverk-108, sverk-4, sverk-6, drone-05, drone-06 (и
+любого следующего). Патч 0004 самодостаточен — не требует предварительного
+применения 0001-0003 (они чинят другое: таймауты полётных команд).
+
+**Важно:** IP из README устарели у части дронов (третий октет сменился с `.1`
+на `.12` минимум у бывшего sverk-8 → `192.168.12.8`, теперь `king-8`) —
+уточните актуальный IP каждого дрона перед подключением, не берите на веру
+таблицу «Куда раскатывать» в README.md.
+
+## 0. Предварительно проверить на дроне
+
+```bash
+ssh pi@<IP_ДРОНА>
+sudo systemctl status sverk-drone-agent.service --no-pager | head -6
+```
+
+Должно быть `active (running)`. Если `pseudo` — патч работает как задуман
+(перехватывает `[ГОЛОСОВАНИЕ]` до regex-парсера). Если уже `agent` — патч всё
+равно безопасен (просто не понадобится regex-обход), но тогда голосование,
+скорее всего, и так может идти через штатный LLM-путь — сначала проверьте,
+не нужен ли патч вообще.
+
+## 1. Задать реальные учётные данные для LLM
+
+На дроне: `~/.sverk_drone_agent_env.sh` (или файл, на который указывает
+`SVERK_DRONE_AGENT_ENV_FILE` в override.conf). Найти и поправить три строки:
+
+```bash
+grep -n 'OPENAI_API_KEY\|OPENAI_MODEL\|OPENAI_BASE_URL' ~/.sverk_drone_agent_env.sh
+```
+
+- `OPENAI_BASE_URL='https://ai.sverk.io/v1'` — обычно уже стоит правильно.
+- `OPENAI_API_KEY='...'` — вписать реальный ключ шлюза (тот же, что уже
+  используется на king-8 / для `STRONG_MODEL_API_KEY` в `web/backend/.env`
+  нашего веб-бэкенда).
+- `OPENAI_MODEL='...'` — **не любая модель подходит конкретному ключу**.
+  Проверенные рабочие модели с ключом, который использовался 2026-08-01:
+  `gemma-4-31b`, `deepseek-v4-pro`, `Gemma 4`, `gemma4-vlm`, `куцк`.
+  `deepseek-v4-flash` в тот день падала 500-й у самого провайдера — не
+  ставить, пока не перепроверите отдельно. Если ключ другой — проверить
+  доступные модели можно одним запросом:
+
+```bash
+curl -s https://ai.sverk.io/v1/chat/completions \
+  -H "Authorization: Bearer <КЛЮЧ>" -H "Content-Type: application/json" \
+  -d '{"model": "любая-заведомо-неверная", "messages": [{"role":"user","content":"тест"}]}'
+```
+
+Ответ вида `"key not allowed to access model. This key can only access
+models=[...]"` перечислит реально доступные модели этому ключу — берите
+любую из списка. Правьте файл прямо на дроне (`nano`/`vi`), не через scp
+локального файла — там в нём же лежат остальные боевые настройки поля
+(`CHESS_*`, `FLEET_*`), перезаписывать файл целиком нельзя.
+
+## 2. Скопировать файлы патча
+
+С этой машины (там, где лежит этот репозиторий):
+
+```bash
+DRONE_IP=<IP_ДРОНА>
+scp patches/sverk_drone_agent/pseudo_agent_text_node.py.patched \
+  pi@$DRONE_IP:/home/pi/catkin_ws/src/sverk_drone_agent/ros1_ws/src/drone_pseudo_agent_ros1/scripts/pseudo_agent_text_node.py
+scp patches/sverk_drone_agent/vote_llm_call.py \
+  pi@$DRONE_IP:/home/pi/catkin_ws/src/sverk_drone_agent/ros1_ws/src/drone_pseudo_agent_ros1/scripts/vote_llm_call.py
+```
+
+(На всякий случай бэкап оригинала перед перезаписью — на самом дроне:
+`cp .../pseudo_agent_text_node.py .../pseudo_agent_text_node.py.bak-$(date +%Y%m%d-%H%M%S)`
+до выполнения scp выше.)
+
+## 3. Применить на дроне
+
+```bash
+ssh pi@$DRONE_IP
+
+chmod +x /home/pi/catkin_ws/src/sverk_drone_agent/ros1_ws/src/drone_pseudo_agent_ros1/scripts/vote_llm_call.py
+
+python3 -m py_compile /home/pi/catkin_ws/src/sverk_drone_agent/ros1_ws/src/drone_pseudo_agent_ros1/scripts/pseudo_agent_text_node.py
+python3 -m py_compile /home/pi/catkin_ws/src/sverk_drone_agent/ros1_ws/src/drone_pseudo_agent_ros1/scripts/vote_llm_call.py
+# обе команды должны отработать без вывода (успех)
+
+rm -rf /home/pi/catkin_ws/src/sverk_drone_agent/ros1_ws/src/drone_pseudo_agent_ros1/scripts/__pycache__
+sudo systemctl daemon-reload
+sudo systemctl restart sverk-drone-agent.service
+sleep 5
+sudo systemctl status sverk-drone-agent.service --no-pager | head -10
+```
+
+Ожидается `active (running)`, оба процесса в CGroup (`bridge_node.py` и
+`pseudo_agent_text_node.py`/`*_agent_text_node`). Дрон в этот момент должен
+стоять на земле, разоружён — рестарт обрывает текущую команду агента.
+
+## 4. Проверить, что обычные команды не сломались
+
+Безопасный нефлайтовый запрос (на самом дроне):
+
+```bash
+source /opt/ros/noetic/setup.bash
+source ~/catkin_ws/devel/setup.bash
+rostopic pub -1 /agent/text_command std_msgs/String \
+  "data: '{\"message_id\": \"check-1\", \"robot_id\": \"<ROBOT_ID>\", \"text\": \"статус\"}'" &
+rostopic echo -n 1 /agent/answer
+```
+
+Ожидается `status: completed` с реальными полями статуса за пару секунд —
+то же самое поведение, что было до патча.
+
+## 5. Проверить голосование
+
+Тем же способом, с текстом голосования:
+
+```bash
+python3 - <<'PY'
+import rospy, json, time
+from std_msgs.msg import String
+rospy.init_node("deploy_check", anonymous=True)
+pub = rospy.Publisher("/agent/text_command", String, queue_size=1)
+for _ in range(50):
+    if pub.get_num_connections() > 0:
+        break
+    time.sleep(0.2)
+text = ("[ГОЛОСОВАНИЕ] Позиция: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1. "
+        "Предложен ход конь g1-f3. Обоснование: тест раскатки. "
+        "Ответь строго одной строкой в одном из форматов: "
+        "\"ДА: <причина>\", \"НЕТ: <причина>\" или \"ХОД: <клетка>-<клетка>: <причина>\".")
+pub.publish(String(data=json.dumps({"message_id": "check-2", "robot_id": "<ROBOT_ID>", "text": text}, ensure_ascii=False)))
+time.sleep(0.5)
+PY
+
+rostopic echo -n 1 /agent/answer
+```
+
+Ожидается ответ строго `ДА: ...` / `НЕТ: ...` / `ХОД: ...` (может занять до
+~15-40 секунд из-за встроенных повторов при нестабильной сети — это
+нормально). **Не** должно быть «Команда не поддерживается» (значит патч не
+применился/кэш не сброшен) и **не** должно вызываться никаких полётных
+инструментов (взлёт/перелёт) — если дрон взлетел в ответ на это сообщение,
+немедленно останавливайте и разбирайтесь, это означает патч лёг не так, как
+задумано.
+
+## 6. Проверить через настоящий путь (с ноутбука, где крутится веб-бэкенд)
+
+Привязать дрон к фигуре (вкладка «Привязка роботов» в веб-морде, или через
+API) и один раз нажать «Предложить ход ИИ» при живом голосовании — новая
+запись должна появиться в «Ленте переговоров» с реальным текстом ответа
+дрона, не с ошибкой про 403/«не поддерживается».
+
+## После — обновить таблицу в README.md
+
+Отметить в таблице «Куда раскатывать» (`README.md` этой же папки) актуальный
+IP и статус `0004` для этого робота, датой.
