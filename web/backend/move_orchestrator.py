@@ -50,16 +50,22 @@ MAX_REGENERATIONS = 2
 # Illegal proposals rejected by our own local validator, before ever talking
 # to the drones - cheap, doesn't spend the regeneration budget above. Also
 # reused for model_error retries (a failed HTTP call to the strong model,
-# see propose_and_execute_move) - each attempt fails fast (35s timeout, see
-# call_strong_model) rather than hanging, so more attempts costs little in
-# the typical case (a real answer is usually well under that) and
-# meaningfully improves the odds of getting past a transient blip or a slow
-# reasoning pass. Worst case if every attempt fails:
-# MAX_LOCAL_RETRIES * (35s timeout + 1s backoff) = 180s (3 min) for this one
-# inner loop - leaves only ~2 min of the 5-minute move limit for the rest of
-# the round (voting, up to MAX_REGENERATIONS more rounds) if that path is
-# ever actually hit for real, so this isn't a number to keep bumping freely.
-MAX_LOCAL_RETRIES = 5
+# see propose_and_execute_move).
+#
+# Retry count vs per-call timeout is a real tradeoff, not "more retries is
+# always safer" - observed live 2026-08-02: deepseek-v4-pro reliably needs
+# MORE reasoning (measured ~1900 completion tokens / 25s+ vs ~1200/15s on a
+# plain position) on this project's non-standard starting layouts (single
+# rook per side, king/queen swapped for semifinal variant 2), and on a
+# genuinely hard position it can take 60-90s+. A short timeout with many
+# retries just re-fails the SAME slow computation over and over without
+# ever letting one attempt finish - the worst possible strategy for a
+# consistently-slow-but-eventually-successful case, as opposed to a truly
+# transient network blip. Fewer, longer attempts wins here: 60s timeout
+# (see call_strong_model) x 3 attempts = 183s (~3 min) worst case for this
+# inner loop, leaving ~2 min of the 5-minute move limit for the rest of the
+# round (voting, up to MAX_REGENERATIONS more rounds).
+MAX_LOCAL_RETRIES = 3
 # A vote round-trip through a piece agent can involve the agent's own
 # retries against its LLM provider (see patches/sverk_drone_agent/0004 -
 # up to ~3 attempts with backoff, observed taking up to ~35-40s on a slow
@@ -81,7 +87,12 @@ STRONG_MODEL_SYSTEM_PROMPT = (
     "Ты выбираешь ход за сторону {color} в упрощённых шахматах (без рокировки, "
     "взятия на проходе, превращения пешки, повторения позиции, правила 50 ходов; "
     "ничьи нет — при пате или истечении лимита времени матча побеждает тот, у "
-    "кого больше очков). Ходить можно любой своей фигурой, включая пешки.\n\n"
+    "кого больше очков). Ходить можно любой своей фигурой, включая пешки. "
+    "Стартовая расстановка в этой партии может отличаться от классической "
+    "(другие файлы пешек, только одна ладья на сторону, иногда король и "
+    "ферзь на непривычных клетках) — это намеренно и корректно, не трать "
+    "время на проверку/сомнения в этом, просто играй от переданной в "
+    "сообщении позиции (FEN) как есть.\n\n"
     "Начисление очков по регламенту: свой ход вовремя +1, взятие пешки +10, "
     "коня или слона +30, ладьи +50, ферзя +90, шах +50, мат — победа сразу. "
     "Штрафы: невозможный ход -5, просрочка хода -10. Тебе в каждом сообщении "
@@ -220,31 +231,34 @@ def call_strong_model(
         "messages": _build_strong_model_messages(fen, our_color, feedback, context),
         "temperature": 0.2,
         # deepseek-v4-pro is a reasoning model - observed live 2026-08-02
-        # spending ~1200 tokens on reasoning_content before ever writing the
-        # actual JSON answer to content. Without an explicit max_tokens the
-        # provider's own default sometimes wasn't enough room for both,
-        # silently truncating mid-reasoning and returning an EMPTY content
-        # field (parsed as "Некорректный ответ модели: Expecting value..."
-        # here) - not a network problem, a token-budget one. 4000 leaves
-        # generous headroom above the ~1300 observed for a normal answer.
-        "max_tokens": 4000,
+        # spending anywhere from ~1200 (plain position) to ~1900+ (this
+        # project's non-standard board layouts, see the system prompt)
+        # tokens on reasoning_content before ever writing the actual JSON
+        # answer to content. Without an explicit max_tokens the provider's
+        # own default sometimes wasn't enough room for both, silently
+        # truncating mid-reasoning and returning an EMPTY content field
+        # (parsed as "Некорректный ответ модели: Expecting value..." here) -
+        # not a network problem, a token-budget one. 6000 leaves generous
+        # headroom above the worst case observed so far.
+        "max_tokens": 6000,
     }
     try:
         response = httpx.post(
             f"{STRONG_MODEL_BASE_URL}/chat/completions",
             json=payload,
             headers={"Authorization": f"Bearer {STRONG_MODEL_API_KEY}"},
-            # Short-ish on purpose, not generous: when the gateway is having
-            # a bad moment, a slow request usually just hangs rather than
-            # eventually succeeding, so failing fast and letting the caller
-            # retry is still better than one long wait. Bumped from 20s to
-            # 35s on 2026-08-02 - deepseek-v4-pro is a reasoning model, and
-            # once the score/time context (see _build_time_score_context)
-            # was added to the prompt, a real (successful) response
-            # sometimes needed more than 20s to think before answering,
-            # observed live burning through 2+ retries on a single round
-            # that would otherwise have succeeded on the first try.
-            timeout=35.0,
+            # 20s -> 35s -> 60s over 2026-08-02, each bump chasing the same
+            # live observation: deepseek-v4-pro is a reasoning model, and on
+            # this project's non-standard board layouts (see the system
+            # prompt's note about them) a real, successful answer can
+            # legitimately take 25-90s+ - a short timeout doesn't "fail
+            # fast", it just guarantees failure on every attempt for a
+            # position that needed more thinking time, burning the whole
+            # retry budget with nothing to show for it (see
+            # MAX_LOCAL_RETRIES). 60s is sized to that, not to a hung
+            # connection - see MAX_LOCAL_RETRIES for the resulting worst-case
+            # budget math.
+            timeout=60.0,
         )
         response.raise_for_status()
         data = response.json()

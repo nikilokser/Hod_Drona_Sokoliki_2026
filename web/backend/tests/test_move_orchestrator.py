@@ -307,7 +307,7 @@ def test_call_strong_model_sends_max_tokens(monkeypatch):
     }
     with patch("move_orchestrator.httpx.post", return_value=mock_response) as mock_post:
         move_orchestrator.call_strong_model("fen", "white")
-    assert mock_post.call_args.kwargs["json"]["max_tokens"] == 4000
+    assert mock_post.call_args.kwargs["json"]["max_tokens"] == 6000
 
 
 def test_call_strong_model_network_error(monkeypatch):
