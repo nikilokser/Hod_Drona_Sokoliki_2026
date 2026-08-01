@@ -50,12 +50,15 @@ MAX_REGENERATIONS = 2
 # Illegal proposals rejected by our own local validator, before ever talking
 # to the drones - cheap, doesn't spend the regeneration budget above. Also
 # reused for model_error retries (a failed HTTP call to the strong model,
-# see propose_and_execute_move) - each attempt now fails fast (20s timeout,
-# see call_strong_model) rather than hanging, so more attempts costs little
-# in the typical case (a real answer is fast) and meaningfully improves the
-# odds of getting past a transient blip. Worst case if every attempt fails:
-# MAX_LOCAL_RETRIES * (20s timeout + 1s backoff) ~= 105s, well inside the
-# regulation's 5-minute move limit.
+# see propose_and_execute_move) - each attempt fails fast (35s timeout, see
+# call_strong_model) rather than hanging, so more attempts costs little in
+# the typical case (a real answer is usually well under that) and
+# meaningfully improves the odds of getting past a transient blip or a slow
+# reasoning pass. Worst case if every attempt fails:
+# MAX_LOCAL_RETRIES * (35s timeout + 1s backoff) = 180s (3 min) for this one
+# inner loop - leaves only ~2 min of the 5-minute move limit for the rest of
+# the round (voting, up to MAX_REGENERATIONS more rounds) if that path is
+# ever actually hit for real, so this isn't a number to keep bumping freely.
 MAX_LOCAL_RETRIES = 5
 # A vote round-trip through a piece agent can involve the agent's own
 # retries against its LLM provider (see patches/sverk_drone_agent/0004 -
@@ -222,13 +225,17 @@ def call_strong_model(
             f"{STRONG_MODEL_BASE_URL}/chat/completions",
             json=payload,
             headers={"Authorization": f"Bearer {STRONG_MODEL_API_KEY}"},
-            # Short on purpose: when the gateway is having a bad moment, a
-            # slow request usually just hangs rather than eventually
-            # succeeding - a 60s timeout meant one bad request cost the
-            # whole round a minute before the (already-fast, same-day-
-            # observed <5s typical) retry even got a chance to run. Better
-            # to fail this one attempt quickly and let the caller retry.
-            timeout=20.0,
+            # Short-ish on purpose, not generous: when the gateway is having
+            # a bad moment, a slow request usually just hangs rather than
+            # eventually succeeding, so failing fast and letting the caller
+            # retry is still better than one long wait. Bumped from 20s to
+            # 35s on 2026-08-02 - deepseek-v4-pro is a reasoning model, and
+            # once the score/time context (see _build_time_score_context)
+            # was added to the prompt, a real (successful) response
+            # sometimes needed more than 20s to think before answering,
+            # observed live burning through 2+ retries on a single round
+            # that would otherwise have succeeded on the first try.
+            timeout=35.0,
         )
         response.raise_for_status()
         data = response.json()
