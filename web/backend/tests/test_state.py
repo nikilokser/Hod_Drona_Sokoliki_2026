@@ -3,7 +3,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from state import apply_move, delete_piece, initial_board, rebind_role, semifinal_initial_board
+from state import (
+    apply_move,
+    delete_piece,
+    initial_board,
+    rebind_role,
+    semifinal_initial_board,
+    semifinal_v2_initial_board,
+)
 
 BINDINGS = {
     "king": "drone-01",
@@ -259,3 +266,47 @@ def test_semifinal_board_rook_assignment_flips_with_our_color():
     assert board["a1"]["piece"] == "rook" and board["a1"]["color"] == "white"
     assert "robot_id" not in board["a1"]
     assert board["h8"] == {"color": "black", "piece": "rook", "robot_id": "rover-02", "role": "rook_2"}
+
+
+# --- semifinal_v2_initial_board ---------------------------------------------
+
+
+def test_semifinal_v2_board_has_22_pieces():
+    board = semifinal_v2_initial_board("white", BINDINGS)
+    assert len(board) == 22
+
+
+def test_semifinal_v2_board_white_king_queen_standard():
+    board = semifinal_v2_initial_board("white", BINDINGS)
+    assert board["d1"] == {"color": "white", "piece": "queen", "robot_id": "drone-02", "role": "queen"}
+    assert board["e1"] == {"color": "white", "piece": "king", "robot_id": "drone-01", "role": "king"}
+
+
+def test_semifinal_v2_board_black_king_queen_swapped():
+    board = semifinal_v2_initial_board("white", BINDINGS)
+    assert board["d8"] == {"color": "black", "piece": "king"}
+    assert board["e8"] == {"color": "black", "piece": "queen"}
+
+
+def test_semifinal_v2_board_our_king_role_follows_the_piece_not_the_square():
+    # If we're black, our own king is still role "king" (bound via
+    # bindings["king"]) even though it now sits on d8, not e8.
+    board = semifinal_v2_initial_board("black", BINDINGS)
+    assert board["d8"] == {"color": "black", "piece": "king", "robot_id": "drone-01", "role": "king"}
+    assert board["e8"] == {"color": "black", "piece": "queen", "robot_id": "drone-02", "role": "queen"}
+
+
+def test_semifinal_v2_board_rook_files():
+    board = semifinal_v2_initial_board("white", BINDINGS)
+    assert board["a1"]["piece"] == "rook" and board["a1"]["color"] == "white"
+    assert "h1" not in board
+    assert board["h8"] == {"color": "black", "piece": "rook"}
+    assert "a8" not in board
+
+
+def test_semifinal_v2_board_pawn_files_differ_by_color():
+    board = semifinal_v2_initial_board("white", BINDINGS)
+    white_pawns = {sq for sq, p in board.items() if p["color"] == "white" and p["piece"] == "pawn"}
+    black_pawns = {sq for sq, p in board.items() if p["color"] == "black" and p["piece"] == "pawn"}
+    assert white_pawns == {"a2", "d2", "e2", "f2"}
+    assert black_pawns == {"c7", "d7", "e7", "h7"}

@@ -35,6 +35,7 @@ from state import (  # noqa: E402
     initial_board,
     rebind_role,
     semifinal_initial_board,
+    semifinal_v2_initial_board,
 )
 from stockfish_client import run_continuous_analysis, start_engine, stop_engine  # noqa: E402
 from ws_manager import ConnectionManager  # noqa: E402
@@ -59,11 +60,16 @@ app = FastAPI(lifespan=lifespan)
 manager = ConnectionManager()
 
 _initial_bindings = load_bindings()
-# "semifinal" (reduced setup, see state.semifinal_initial_board) or "full"
-# (state.initial_board) - which one /api/reset and /api/our-color rebuild
-# the board with. Semifinals: one rook/side, 4 pawns/side (see the
-# organizers' 2026-08-01 photo). Finals: the full 16+16 board.
-BOARD_VARIANTS = {"semifinal": semifinal_initial_board, "full": initial_board}
+# Which board layout /api/reset and /api/our-color rebuild the board with:
+# "semifinal" (state.semifinal_initial_board, organizers' 2026-08-01
+# photo), "semifinal_v2" (state.semifinal_v2_initial_board, different
+# pawn files + black king/queen swapped, 2026-08-02 photo), or "full"
+# (state.initial_board, the final's full 16+16 board).
+BOARD_VARIANTS = {
+    "semifinal": semifinal_initial_board,
+    "semifinal_v2": semifinal_v2_initial_board,
+    "full": initial_board,
+}
 
 
 def _fresh_score_state() -> dict:
@@ -157,7 +163,7 @@ async def set_our_color(payload: ColorRequest) -> dict:
 
 
 class BoardVariantRequest(BaseModel):
-    variant: Literal["semifinal", "full"]
+    variant: Literal["semifinal", "semifinal_v2", "full"]
 
 
 @app.post("/api/board-variant")
