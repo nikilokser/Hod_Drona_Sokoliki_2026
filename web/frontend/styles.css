@@ -181,6 +181,13 @@ select {
   font-size: 0.9rem;
 }
 
+/* Native checkboxes throughout the app (chat/stockfish/auto-move toggles,
+   the per-role exclude switch) - just tinting them to the theme's accent
+   instead of the browser-default blue, cheap and widely supported. */
+input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
 .toolbar-group {
   display: flex;
   align-items: center;
@@ -485,6 +492,24 @@ select {
   filter: drop-shadow(0 1.5px 1.5px rgba(0, 0, 0, 0.4));
 }
 
+/* Excluded from moves (see the toggle in "Привязка роботов") - its robot is
+   known broken/unavailable, so the piece stays on the board but is dimmed
+   and (in "manual") not draggable. The corner badge is the actual signal
+   (dimming alone reads too much like "just a shadow/theme thing" at a
+   glance); it's positioned/sized in renderPiece, not here. */
+.piece-excluded .piece-image {
+  opacity: 0.45;
+  filter: grayscale(0.6) drop-shadow(0 1.5px 1.5px rgba(0, 0, 0, 0.4));
+}
+
+.piece-excluded-badge {
+  font-size: 15px;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.6));
+}
+
 .board-label {
   font-size: 11px;
   fill: #6b5236;
@@ -554,11 +579,14 @@ select {
   box-shadow: var(--shadow);
 }
 
+/* Title on its own row, actions row below it - the chat panel is a narrow
+   sidebar column now (not the full-width row it briefly was), so title +
+   checkbox + button never fit on one line without the button getting
+   squeezed past the panel's own edge. */
 .chat-panel-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 10px;
 }
 
@@ -572,7 +600,9 @@ select {
 .chat-panel-actions {
   display: flex;
   align-items: center;
-  gap: 14px;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
 }
 
 .chat-filter-toggle {
@@ -582,6 +612,7 @@ select {
 }
 
 #chat-clear-button {
+  flex-shrink: 0;
   padding: 4px 10px;
   font-size: 0.75rem;
 }
@@ -700,7 +731,7 @@ select {
 
 .bindings-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
   gap: 10px 16px;
   margin-bottom: 14px;
 }
@@ -708,21 +739,80 @@ select {
 .binding-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
 }
 
 .binding-label {
+  flex: 0 0 66px;
   font-size: 0.8rem;
   color: var(--text-muted);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .binding-row select {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
+  height: 30px;
   font-size: 0.8rem;
   padding: 4px 6px;
+}
+
+/* Pill switch for the per-role "exclude from moves" toggle - the actual
+   <input type=checkbox> is visually hidden but stays in the DOM/tab order
+   for accessibility; .role-toggle-track is what's actually seen and driven
+   by its :checked state via the adjacent-sibling selectors below. */
+.role-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.role-toggle-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.role-toggle-track {
+  position: relative;
+  width: 30px;
+  height: 17px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.role-toggle-thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform 0.15s, background 0.15s;
+}
+
+.role-toggle-input:checked + .role-toggle-track {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+.role-toggle-input:checked + .role-toggle-track .role-toggle-thumb {
+  transform: translateX(13px);
+  background: var(--danger);
+}
+
+.role-toggle-input:focus-visible + .role-toggle-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .analysis-panel-row {

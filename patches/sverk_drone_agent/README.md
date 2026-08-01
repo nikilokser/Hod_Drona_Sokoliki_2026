@@ -2,9 +2,14 @@
 
 Патчи для стороннего репозитория `dark516/sverk_drone_agent` (не входит в этот
 git-репозиторий, живёт на каждом дроне в `~/catkin_ws/src/sverk_drone_agent`).
-Применять по порядку: `0001` → `0002` → `0003`. `*.patched` — итоговые файлы
-после всех трёх патчей (можно накатить одним копированием вместо применения
-диффов).
+Применять по порядку: `0001` → `0002` → `0003` → `0004`. `*.patched` —
+итоговые файлы после соответствующих патчей (можно накатить одним
+копированием вместо применения диффов).
+
+**Сеть:** третий октет IP дронов сменился на `.12` (например sverk-8 теперь
+`192.168.12.8`, было `192.168.1.8`) - см. таблицу «Куда раскатывать» ниже,
+актуально только для sverk-8 (проверено 2026-08-01), для остальных - уточнить
+перед подключением.
 
 ## 0001 — таймаут на ROS service call
 
@@ -73,62 +78,83 @@ observed before timeout"`, хотя дрон физически садился �
 
 Файл: `ros1_ws/src/drone_agent_mcp_ros1/src/drone_agent_mcp_ros1/drone_ros_bridge.py`
 
-## Голосование по предложенному ходу — конфиг, не патч кода
+## 0004 — голосование по предложенному ходу без переключения в agent-режим
 
 См. дизайн `docs/superpowers/specs/2026-07-31-ai-move-negotiation-design.md`.
 Веб-морда (`move_orchestrator.py`) рассылает предложенный ход агентам фигур с
 префиксом `[ГОЛОСОВАНИЕ]` и ждёт ответ в формате `ДА:`/`НЕТ:`/`ХОД: <откуда>-
-<куда>:`. Это решается **конфигом**, без изменения кода вендора — через уже
-существующий хук `AGENT_PROMPT_FILE` (`agent_text_node.py::system_prompt()`),
-текст для дописывания — `agent_prompt_voting_addition.md` рядом с этим файлом.
+<куда>:`.
 
-**Важное условие, которое нужно проверить перед раскаткой на конкретном
-дроне: голосование работает только в режиме `agent` (настоящий LLM,
-`drone_agent_mcp_ros1`), а не в `pseudo` (`drone_pseudo_agent_ros1`).**
-У псевдо-агента нет LLM вообще — `command_parser.py` разбирает текст
-регулярками под конкретный список команд полёта, никакой ветки для
-свободного текста вроде `[ГОЛОСОВАНИЕ] ...` там нет, ответ будет ошибкой
-парсинга. На момент патчей 0001-0003 и `sverk-8`, и `sverk-108` работали
-именно в `pseudo`-режиме (`DRONE_AGENT_MODE=pseudo`, видно по
-`drone_pseudo_agent_stack.launch` в выводе `systemctl status`) — переключение
-на `agent` для голосования ещё не сделано ни на одном дроне.
+**Изначальный план был решить это конфигом** (переключить
+`DRONE_AGENT_MODE=pseudo` → `agent` + дописать `agent_prompt_voting_addition.md`
+в `config/agent_prompt.md`, см. ниже «Альтернатива»), но у него был существенный
+недостаток: `agent`-режим пропускает через реальный LLM **вообще все**
+команды, включая обычные полётные (`command_parser.py` в `pseudo` — просто
+надёжные регулярки под фиксированный список команд, без LLM вообще, и это
+сознательно не трогалось раньше — см. `CLAUDE.md`, «Лимиты безопасности в
+коде... трогать не будем»). Переключение всего дрона в `agent` ради одного
+голосования означало бы отдать и взлёт/перелёт/посадку на волю LLM.
 
-Шаги для конкретного дрона (не выполнялись автоматически, нужно
-подтверждение перед раскаткой на живом железе):
+0004 вместо этого патчит `pseudo_agent_text_node.py` напрямую: сообщение с
+префиксом `[ГОЛОСОВАНИЕ]` перехватывается **до** вызова `parse_text_command` и
+уходит отдельным вызовом в LLM (тот же `OpenRouterHost._post_chat`, что
+использует «настоящий» agent-режим, с теми же `OPENAI_*` переменными), а
+всё остальное (обычные команды полёта) продолжает идти через прежний,
+проверенный `command_parser.py` без единого изменения. Этому LLM-вызову
+принципиально не передаётся MCP-клиент/список tools — модели физически
+нечем управлять дроном в ответ на голосование, только текстовый ответ или
+ошибка.
 
-1. Проверить/выставить в systemd override (`/etc/systemd/system/sverk-drone-agent.service.d/override.conf`):
-   `DRONE_AGENT_MODE=agent` (сейчас `pseudo`), `OPENAI_BASE_URL=https://ai.sverk.io/v1`,
-   `OPENAI_MODEL=<слабая модель, например gemma-4-31b>`, `OPENAI_API_KEY=<ключ шлюза>`.
-2. Найти/создать `config/agent_prompt.md` в
+Файл: `ros1_ws/src/drone_pseudo_agent_ros1/scripts/pseudo_agent_text_node.py`
+
+**Применено на sverk-8 2026-08-01, проверено:**
+- обычная команда `статус` по-прежнему обрабатывается штатным парсером
+  (`status: completed`, без изменений в поведении);
+- тестовое сообщение `[ГОЛОСОВАНИЕ] ...` больше не даёт «Команда не
+  поддерживается» — корректно уходит в `execute_vote`, и падает с понятной
+  `Ошибка агента: LLM API key is not set` (на sverk-8 `OPENAI_API_KEY` пуст в
+  override.conf — установить реальный ключ шлюза, чтобы голосование заработало
+  по-настоящему, само по себе это не баг патча).
+
+`agent_prompt_voting_addition.md` в этой папке для 0004 **не используется** -
+он был написан под план с полным `agent`-режимом (системный промпт целого
+агента), в 0004 системный промпт для голосования зашит прямо в патч
+(`VOTE_SYSTEM_PROMPT`), отдельно от промпта обычных полётных команд.
+
+### Альтернатива (не применялась) — полное переключение в agent-режим
+
+Если голосование всё же нужно через полноценный agent-режим (например чтобы
+заодно и обычные команды шли через LLM), шаги те же, что были здесь описаны
+изначально:
+
+1. В systemd override (`/etc/systemd/system/sverk-drone-agent.service.d/override.conf`):
+   `DRONE_AGENT_MODE=agent`, `OPENAI_BASE_URL=https://ai.sverk.io/v1`,
+   `OPENAI_MODEL=<модель>`, `OPENAI_API_KEY=<ключ шлюза>`.
+2. Создать `config/agent_prompt.md` в
    `~/catkin_ws/src/sverk_drone_agent/ros1_ws/src/drone_agent_mcp_ros1/` и
-   **дописать** в конец содержимое `agent_prompt_voting_addition.md`.
-3. Убедиться, что `AGENT_PROMPT_FILE` в override указывает на этот файл
-   (по умолчанию пусто — кастомизация не подключена, пока явно не задано).
-4. `rm -rf .../drone_agent_mcp_ros1/__pycache__` (если есть), `sudo systemctl daemon-reload`,
-   `sudo systemctl restart sverk-drone-agent.service`.
-5. Проверить тем же способом, что и после патчей 0001-0003 (см. «Быстрая
-   проверка после рестарта» ниже) плюс отдельно голосовым сообщением
-   вручную через `rostopic pub` с текстом `[ГОЛОСОВАНИЕ] ...` — ожидается
-   ответ строго `ДА:`/`НЕТ:`/`ХОД: ...`, без вызова инструментов полёта.
+   дописать в конец содержимое `agent_prompt_voting_addition.md`.
+3. `AGENT_PROMPT_FILE` в override указать на этот файл.
+4. Сбросить `__pycache__`, `daemon-reload`, `restart`.
 
-Переключение в `agent`-режим меняет и обычные полётные команды: они тоже
-пойдут через реальный LLM вместо детерминированного `command_parser`, так что
-это не изолированное изменение только для голосования — стоит перепроверить
-обычный сценарий взлёт/перелёт/посадка после переключения, а не только
-голосование.
+Переключение в `agent`-режим меняет и обычные полётные команды — стоит
+перепроверить взлёт/перелёт/посадку после переключения, а не только
+голосование. Не применялось ни на одном дроне.
 
 ## Куда раскатывать
 
-Роботы из `sverk_ai_communication_server/config/fleet.yaml` типа `ros1_drone`:
+Роботы из `sverk_ai_communication_server/config/fleet.yaml` типа `ros1_drone`.
+IP даны на момент последней проверки конкретного дрона - третий октет
+сменился на `.12` (см. предупреждение в начале файла), для роботов без
+пометки "проверено 2026-08-01" актуальный IP не подтверждён:
 
-| robot_id  | IP            | 0001                | 0002                | 0003                |
-|-----------|---------------|----------------------|----------------------|----------------------|
-| sverk-8   | 192.168.1.8   | применён 2026-07-30  | применён 2026-07-30  | применён 2026-07-30  |
-| sverk-108 | 192.168.1.108 | применён 2026-07-30  | применён 2026-07-30  | применён 2026-07-30  |
-| sverk-4   | 192.168.1.4   | не применён          | не применён          | не применён          |
-| sverk-6   | 192.168.1.6   | не применён          | не применён          | не применён          |
-| drone-05  | 10.194.179.135| не применён          | не применён          | не применён          |
-| drone-06  | 10.194.179.136| не применён          | не применён          | не применён          |
+| robot_id  | IP             | 0001                | 0002                | 0003                | 0004                |
+|-----------|----------------|----------------------|----------------------|----------------------|----------------------|
+| sverk-8   | 192.168.12.8 (проверено 2026-08-01, было 192.168.1.8) | применён 2026-07-30 | применён 2026-07-30 | применён 2026-07-30 | применён 2026-08-01 |
+| sverk-108 | 192.168.1.108  | применён 2026-07-30  | применён 2026-07-30  | применён 2026-07-30  | не применён          |
+| sverk-4   | 192.168.1.4    | не применён          | не применён          | не применён          | не применён          |
+| sverk-6   | 192.168.1.6    | не применён          | не применён          | не применён          | не применён          |
+| drone-05  | 10.194.179.135 | не применён          | не применён          | не применён          | не применён          |
+| drone-06  | 10.194.179.136 | не применён          | не применён          | не применён          | не применён          |
 
 ## Как применить
 
@@ -140,15 +166,16 @@ observed before timeout"`, хотя дрон физически садился �
 
 ### Вариант А — git apply / patch (предпочтительно)
 ```bash
-scp 0001-bound-ros-service-call-timeout.patch 0002-separate-service-call-timeout.patch 0003-trust-land-service-success-over-telemetry-poll.patch pi@<IP_ДРОНА>:/home/pi/
+scp 0001-bound-ros-service-call-timeout.patch 0002-separate-service-call-timeout.patch 0003-trust-land-service-success-over-telemetry-poll.patch 0004-route-voting-prefix-to-llm-in-pseudo-mode.patch pi@<IP_ДРОНА>:/home/pi/
 ssh pi@<IP_ДРОНА>
 cd ~/catkin_ws/src/sverk_drone_agent
 git apply --check ~/0001-bound-ros-service-call-timeout.patch && git apply ~/0001-bound-ros-service-call-timeout.patch
 git apply --check ~/0002-separate-service-call-timeout.patch && git apply ~/0002-separate-service-call-timeout.patch
 git apply --check ~/0003-trust-land-service-success-over-telemetry-poll.patch && git apply ~/0003-trust-land-service-success-over-telemetry-poll.patch
-rm ~/0001-bound-ros-service-call-timeout.patch ~/0002-separate-service-call-timeout.patch ~/0003-trust-land-service-success-over-telemetry-poll.patch
+git apply --check ~/0004-route-voting-prefix-to-llm-in-pseudo-mode.patch && git apply ~/0004-route-voting-prefix-to-llm-in-pseudo-mode.patch
+rm ~/0001-bound-ros-service-call-timeout.patch ~/0002-separate-service-call-timeout.patch ~/0003-trust-land-service-success-over-telemetry-poll.patch ~/0004-route-voting-prefix-to-llm-in-pseudo-mode.patch
 ```
-(на новом, ещё не патченном дроне применяйте все три по порядку; если часть
+(на новом, ещё не патченном дроне применяйте все четыре по порядку; если часть
 уже стоит — только оставшиеся. `git apply --check` перед реальным применением
 бесплатно скажет, если что-то не сойдётся.)
 
@@ -156,9 +183,11 @@ rm ~/0001-bound-ros-service-call-timeout.patch ~/0002-separate-service-call-time
 ```bash
 scp drone_ros_bridge.py.patched pi@<IP_ДРОНА>:~/catkin_ws/src/sverk_drone_agent/ros1_ws/src/drone_agent_mcp_ros1/src/drone_agent_mcp_ros1/drone_ros_bridge.py
 scp safety.py.patched pi@<IP_ДРОНА>:~/catkin_ws/src/sverk_drone_agent/ros1_ws/src/drone_agent_mcp_ros1/src/drone_agent_mcp_ros1/safety.py
+scp pseudo_agent_text_node.py.patched pi@<IP_ДРОНА>:~/catkin_ws/src/sverk_drone_agent/ros1_ws/src/drone_pseudo_agent_ros1/scripts/pseudo_agent_text_node.py
 ```
-(на всякий случай сделайте бэкап оригиналов перед перезаписью:
-`cp drone_ros_bridge.py drone_ros_bridge.py.bak-$(date +%Y%m%d-%H%M%S)` и то же для `safety.py`)
+(на всякий случай сделайте бэкап оригиналов перед перезаписью, например
+`cp pseudo_agent_text_node.py pseudo_agent_text_node.py.bak-$(date +%Y%m%d-%H%M%S)`
+и аналогично для остальных двух файлов)
 
 ## После применения — обязательно
 
@@ -166,7 +195,10 @@ scp safety.py.patched pi@<IP_ДРОНА>:~/catkin_ws/src/sverk_drone_agent/ros1_
 `src/` напрямую), но нужно сбросить кэш байткода и перезапустить процесс:
 
 ```bash
-rm -rf ~/catkin_ws/src/sverk_drone_agent/ros1_ws/src/drone_agent_mcp_ros1/src/drone_agent_mcp_ros1/__pycache__
+rm -rf ~/catkin_ws/src/sverk_drone_agent/ros1_ws/src/drone_agent_mcp_ros1/src/drone_agent_mcp_ros1/__pycache__ \
+       ~/catkin_ws/src/sverk_drone_agent/ros1_ws/src/drone_pseudo_agent_ros1/scripts/__pycache__ \
+       ~/catkin_ws/src/sverk_drone_agent/ros1_ws/src/drone_pseudo_agent_ros1/src/drone_pseudo_agent_ros1/__pycache__
+sudo systemctl daemon-reload
 sudo systemctl restart sverk-drone-agent.service
 systemctl status sverk-drone-agent.service --no-pager   # оба процесса (bridge_node, *_agent_text_node) должны быть active
 ```
@@ -184,3 +216,9 @@ rostopic pub -1 /agent/text_command std_msgs/String \
 rostopic echo -n 1 /agent/answer
 ```
 Ожидается `status: completed` в течение пары секунд.
+
+После 0004 - тем же способом, но с `"text": "[ГОЛОСОВАНИЕ] тест"`. Ожидается
+НЕ `"Команда не поддерживается..."` (это означало бы, что патч не применился
+или `__pycache__` не сброшен), а либо реальный ответ `ДА:`/`НЕТ:`/`ХОД: ...`,
+либо (если `OPENAI_API_KEY` пуст) явная `Ошибка агента: LLM API key is not
+set` - обе реакции подтверждают, что перехват сработал.

@@ -1,0 +1,92 @@
+--- a/ros1_ws/src/drone_pseudo_agent_ros1/scripts/pseudo_agent_text_node.py
++++ b/ros1_ws/src/drone_pseudo_agent_ros1/scripts/pseudo_agent_text_node.py
+@@ -10,6 +10,7 @@
+ 
+ from drone_agent_mcp_ros1.drone_ros_bridge import DroneRos1Bridge
+ from drone_agent_mcp_ros1.fleet_protocol import make_answer_payload, make_status_payload, parse_command_payload
++from drone_agent_mcp_ros1.openrouter_host import OpenRouterError, OpenRouterHost
+ from drone_agent_mcp_ros1.utils import json_dumps
+ from drone_pseudo_agent_ros1.command_parser import (
+     ChessFlightCommand,
+@@ -24,6 +25,20 @@
+     parse_text_command,
+ )
+ 
++# Messages with this prefix are a move-negotiation vote request from the web
++# dashboard's AI orchestrator (move_orchestrator.py:_build_vote_message), not
++# a flight command - see execute_vote() below.
++VOTE_PREFIX = "[ГОЛОСОВАНИЕ]"
++
++VOTE_SYSTEM_PROMPT = (
++    "Ты агент фигуры дрона в игре «Ход дрона: шахматные сражения роёв». "
++    "Сообщения с префиксом [ГОЛОСОВАНИЕ] - это не команда полёта, а запрос "
++    "оценить предложенный ход. Отвечай строго одной строкой в одном из "
++    "форматов: «ДА: <причина>», «НЕТ: <причина>» или "
++    "«ХОД: <клетка>-<клетка>: <причина>». Никакого текста до или после "
++    "этой строки, никакого markdown."
++)
++
+ 
+ def env_float(name: str, default: float) -> float:
+     try:
+@@ -57,6 +72,13 @@
+         self.current_cell: str | None = None
+         self.lock = threading.Lock()
+         self.bridge = DroneRos1Bridge()
++        # Only used for [ГОЛОСОВАНИЕ] vote requests (see execute_vote) - reads
++        # OPENAI_API_KEY/OPENAI_MODEL/OPENAI_BASE_URL same as the real
++        # drone_agent_mcp_ros1 agent, but this instance is never given an MCP
++        # client/tool list, so it has no way to trigger any flight action -
++        # a vote request can only ever produce a plain reply string, never a
++        # tool call, regardless of what the model is asked or how it answers.
++        self.vote_host = OpenRouterHost(system_prompt=VOTE_SYSTEM_PROMPT)
+ 
+         self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=10)
+         self.answer_pub = rospy.Publisher(self.answer_topic, String, queue_size=10)
+@@ -112,6 +134,13 @@
+                 self.active = False
+ 
+     def execute_text_command(self, text: str) -> dict[str, object]:
++        # A vote request, not a flight command - the regex parser below has
++        # no notion of free-text discussion and would just reject it as
++        # unsupported, so this is checked first and returns before ever
++        # reaching parse_text_command.
++        if text.strip().startswith(VOTE_PREFIX):
++            return self.execute_vote(text)
++
+         try:
+             command = parse_text_command(text)
+         except CommandParseError as exc:
+@@ -203,6 +232,32 @@
+         )
+         return {"success": True, "reply": reply, "result": status}
+ 
++    def execute_vote(self, text: str) -> dict[str, object]:
++        """Answers a [ГОЛОСОВАНИЕ] move-negotiation request via a plain LLM
++        chat completion - reuses OpenRouterHost's HTTP call (_post_chat) but
++        with no MCP client/tool list, so the model has no tools to call at
++        all here; the only possible outcomes are a reply string or an
++        error, never a flight action."""
++
++        try:
++            response = self.vote_host._post_chat({
++                "model": self.vote_host.model,
++                "messages": [
++                    {"role": "system", "content": self.vote_host.system_prompt},
++                    {"role": "user", "content": text},
++                ],
++                "temperature": 0.2,
++            })
++            content = str(response["choices"][0]["message"]["content"] or "").strip()
++        except OpenRouterError as exc:
++            return {"success": False, "reply": "Ошибка агента: %s" % exc}
++        except (KeyError, IndexError, TypeError) as exc:
++            return {"success": False, "reply": "Некорректный ответ LLM на голосование: %s" % exc}
++
++        if not content:
++            return {"success": False, "reply": "LLM вернул пустой ответ на голосование."}
++        return {"success": True, "reply": content}
++
+     def execute_chess_flight(self, command: ChessFlightCommand) -> dict[str, object]:
+         if command.source_cell and self.current_cell and self.current_cell != command.source_cell:
+             rospy.logwarn(

@@ -201,7 +201,14 @@ function render(state) {
     return;
   }
 
-  const signature = JSON.stringify([state.board, state.mode, state.our_color, state.side_to_move, state.last_move]);
+  const signature = JSON.stringify([
+    state.board,
+    state.mode,
+    state.our_color,
+    state.side_to_move,
+    state.last_move,
+    state.excluded_roles,
+  ]);
   if (signature === lastBoardSignature) {
     // Nothing that affects the board's pieces/highlighting/draggability
     // actually changed since the last rebuild (a very frequent case: every
@@ -922,7 +929,8 @@ async function apiDismissRobotAlert(alertId) {
 function renderBindingsPanel(state) {
   if (!state.bindings) return;
 
-  const signature = JSON.stringify([state.bindings, latestRobots]);
+  const excludedRoles = state.excluded_roles || [];
+  const signature = JSON.stringify([state.bindings, latestRobots, excludedRoles]);
   if (signature === lastBindingsSignature) {
     // Nothing that affects the dropdowns' options/selection actually
     // changed since the last rebuild - skip tearing down the <select>
@@ -964,6 +972,29 @@ function renderBindingsPanel(state) {
 
     select.addEventListener("change", () => apiSetBinding(role, select.value));
     row.appendChild(select);
+
+    // A small pill switch rather than a bare native checkbox - reads much
+    // more clearly as "this piece is turned off" at the tiny size these
+    // rows have room for.
+    const excludeLabel = document.createElement("label");
+    excludeLabel.className = "role-toggle";
+    excludeLabel.title = "Исключить фигуру из ходов (робот сломан/недоступен)";
+    const excludeCheckbox = document.createElement("input");
+    excludeCheckbox.type = "checkbox";
+    excludeCheckbox.className = "role-toggle-input";
+    excludeCheckbox.checked = excludedRoles.includes(role);
+    excludeCheckbox.addEventListener("change", () =>
+      apiSetRoleExcluded(role, excludeCheckbox.checked)
+    );
+    const track = document.createElement("span");
+    track.className = "role-toggle-track";
+    const thumb = document.createElement("span");
+    thumb.className = "role-toggle-thumb";
+    track.appendChild(thumb);
+    excludeLabel.appendChild(excludeCheckbox);
+    excludeLabel.appendChild(track);
+    row.appendChild(excludeLabel);
+
     bindingsList.appendChild(row);
   }
 }
@@ -973,6 +1004,14 @@ async function apiSetBinding(role, robotId) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ role, robot_id: robotId }),
+  });
+}
+
+async function apiSetRoleExcluded(role, excluded) {
+  await fetch("/api/bindings/exclude", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role, excluded }),
   });
 }
 
@@ -1057,6 +1096,14 @@ function renderPiece(square, piece, state) {
 
   const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
   group.dataset.square = square;
+  // A role excluded via the "Привязка роботов" tab means its robot is known
+  // broken/unavailable - the backend refuses to dispatch a command for it
+  // (see execute_move in move_orchestrator.py), so dragging it in "manual"
+  // is blocked here too rather than letting the operator hit a rejection
+  // after the fact. "correct" stays exempt on purpose: it's pure board-state
+  // bookkeeping, never dispatches a robot command, so exclusion doesn't
+  // apply there.
+  const isExcluded = Boolean(piece.role) && (state.excluded_roles || []).includes(piece.role);
   // "manual" dispatches real robot commands but is a debug mode - any piece
   // can be dragged regardless of whose turn it officially is; "correct"
   // stays unrestricted too (the way to fix an out-of-turn/wrong position);
@@ -1066,9 +1113,12 @@ function renderPiece(square, piece, state) {
   // drags during a live match.
   const draggable =
     state.mode === "correct" ||
-    state.mode === "manual" ||
+    (state.mode === "manual" && !isExcluded) ||
     (state.mode === "view" && piece.color !== state.our_color);
-  group.setAttribute("class", `piece ${draggable ? "" : "disabled"}`);
+  group.setAttribute(
+    "class",
+    `piece ${draggable ? "" : "disabled"} ${isExcluded ? "piece-excluded" : ""}`
+  );
 
   const isOurs = piece.color === state.our_color;
   if (isOurs) {
@@ -1090,6 +1140,18 @@ function renderPiece(square, piece, state) {
   image.setAttribute("height", iconSize);
   image.setAttribute("class", "piece-image");
   group.appendChild(image);
+
+  if (isExcluded) {
+    // A dimmed ring alone was too subtle to actually read as "excluded" at
+    // a glance - an explicit badge in the corner is unambiguous regardless
+    // of piece color/theme.
+    const badge = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    badge.setAttribute("x", cx + CELL / 2 - 6);
+    badge.setAttribute("y", cy - CELL / 2 + 8);
+    badge.setAttribute("class", "piece-excluded-badge");
+    badge.textContent = "⛔";
+    group.appendChild(badge);
+  }
 
   if (draggable) {
     group.addEventListener("pointerdown", onPointerDown);

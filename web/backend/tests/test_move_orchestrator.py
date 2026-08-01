@@ -380,6 +380,27 @@ async def test_propose_and_execute_move_rejects_when_not_our_turn():
 
 
 @pytest.mark.asyncio
+async def test_propose_and_execute_move_rejects_excluded_role_proposal(monkeypatch):
+    # g1 is knight_2 for white (see state.py's BACK_RANK) - excluding it and
+    # having the model keep proposing exactly that move should exhaust the
+    # local retry budget without ever calling execute_move/the Gateway.
+    app_state = make_app_state(excluded_roles=["knight_2"])
+    monkeypatch.setattr(
+        move_orchestrator,
+        "call_strong_model",
+        lambda fen, color, feedback=None: {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
+    )
+
+    with patch("move_orchestrator.send_fly_command") as mock_send:
+        result = await move_orchestrator.propose_and_execute_move(app_state, _noop_broadcast)
+
+    assert result["ok"] is False
+    assert result["attempts"][-1]["outcome"] == "local_validation_exhausted"
+    mock_send.assert_not_called()
+    assert app_state["board"]["g1"]["piece"] == "knight"
+
+
+@pytest.mark.asyncio
 async def test_propose_and_execute_move_model_error_aborts(monkeypatch):
     app_state = make_app_state()
     monkeypatch.setattr(

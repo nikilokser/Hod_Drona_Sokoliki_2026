@@ -1,0 +1,383 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import threading
+import traceback
+
+import rospy
+from std_msgs.msg import String
+
+from drone_agent_mcp_ros1.drone_ros_bridge import DroneRos1Bridge
+from drone_agent_mcp_ros1.fleet_protocol import make_answer_payload, make_status_payload, parse_command_payload
+from drone_agent_mcp_ros1.openrouter_host import OpenRouterError, OpenRouterHost
+from drone_agent_mcp_ros1.utils import json_dumps
+from drone_pseudo_agent_ros1.command_parser import (
+    ChessFlightCommand,
+    CommandParseError,
+    HoldCommand,
+    InitializeCellCommand,
+    LandCommand,
+    RelativeFlightCommand,
+    StatusCommand,
+    TakeoffCommand,
+    TelemetryCommand,
+    parse_text_command,
+)
+
+# Messages with this prefix are a move-negotiation vote request from the web
+# dashboard's AI orchestrator (move_orchestrator.py:_build_vote_message), not
+# a flight command - see execute_vote() below.
+VOTE_PREFIX = "[ГОЛОСОВАНИЕ]"
+
+VOTE_SYSTEM_PROMPT = (
+    "Ты агент фигуры дрона в игре «Ход дрона: шахматные сражения роёв». "
+    "Сообщения с префиксом [ГОЛОСОВАНИЕ] - это не команда полёта, а запрос "
+    "оценить предложенный ход. Отвечай строго одной строкой в одном из "
+    "форматов: «ДА: <причина>», «НЕТ: <причина>» или "
+    "«ХОД: <клетка>-<клетка>: <причина>». Никакого текста до или после "
+    "этой строки, никакого markdown."
+)
+
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(str(os.getenv(name, str(default))).replace(",", "."))
+    except ValueError:
+        return float(default)
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    return str(os.getenv(name, "1" if default else "0")).strip().lower() in {"1", "true", "yes", "on", "да"}
+
+
+def _format_distance(value_m: float) -> str:
+    rounded = round(float(value_m), 3)
+    if abs(rounded - int(rounded)) < 1e-9:
+        return str(int(rounded))
+    return ("%g" % rounded).replace(".", ",")
+
+
+class DronePseudoAgentTextNodeRos1:
+    def __init__(self):
+        self.robot_id = os.getenv("FLEET_ROBOT_ID", "drone-01").strip()
+        self.command_topic = os.getenv("AGENT_TEXT_COMMAND_TOPIC", "/agent/text_command")
+        self.status_topic = os.getenv("AGENT_STATUS_TOPIC", "/agent/status")
+        self.answer_topic = os.getenv("AGENT_ANSWER_TOPIC", "/agent/answer")
+        self.takeoff_height_m = env_float("PSEUDO_TAKEOFF_HEIGHT_M", 0.8)
+        self.takeoff_speed_mps = env_float("PSEUDO_TAKEOFF_SPEED_MPS", 0.15)
+        self.move_speed_mps = env_float("PSEUDO_MOVE_SPEED_MPS", 0.5)
+        self.land_wait_until_disarmed = env_bool("PSEUDO_LAND_WAIT_UNTIL_DISARMED", True)
+        self.active = False
+        self.current_cell: str | None = None
+        self.lock = threading.Lock()
+        self.bridge = DroneRos1Bridge()
+        # Only used for [ГОЛОСОВАНИЕ] vote requests (see execute_vote) - reads
+        # OPENAI_API_KEY/OPENAI_MODEL/OPENAI_BASE_URL same as the real
+        # drone_agent_mcp_ros1 agent, but this instance is never given an MCP
+        # client/tool list, so it has no way to trigger any flight action -
+        # a vote request can only ever produce a plain reply string, never a
+        # tool call, regardless of what the model is asked or how it answers.
+        self.vote_host = OpenRouterHost(system_prompt=VOTE_SYSTEM_PROMPT)
+
+        self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=10)
+        self.answer_pub = rospy.Publisher(self.answer_topic, String, queue_size=10)
+        rospy.Subscriber(self.command_topic, String, self.on_command, queue_size=10)
+
+        rospy.loginfo(
+            "Pseudo-agent %s listens on %s, publishes %s and %s",
+            self.robot_id,
+            self.command_topic,
+            self.status_topic,
+            self.answer_topic,
+        )
+
+    def publish(self, publisher, payload):
+        publisher.publish(String(data=json_dumps(payload)))
+
+    def on_command(self, msg):
+        try:
+            context = parse_command_payload(msg.data, self.robot_id)
+        except ValueError as exc:
+            rospy.logwarn("Invalid command: %s", exc)
+            return
+
+        with self.lock:
+            if self.active:
+                text = "Псевдо-агент всё ещё выполняет предыдущую команду."
+                self.publish(self.status_pub, make_status_payload(context, status="error", text=text))
+                self.publish(self.answer_pub, make_answer_payload(context, status="error", text=text))
+                return
+            self.active = True
+
+        rospy.loginfo("Received pseudo-agent command %s: %s", context.message_id, context.text)
+        threading.Thread(target=self.run, args=(context,), daemon=True).start()
+
+    def run(self, context):
+        try:
+            self.publish(
+                self.status_pub,
+                make_status_payload(context, status="running", text="Команда получена pseudo-agent."),
+            )
+            result = self.execute_text_command(context.text)
+            rospy.loginfo("Pseudo-agent result: %s", json_dumps(result))
+            reply = str(result.get("reply") or "Готово.").strip()
+            status = "completed" if bool(result.get("success", True)) else "error"
+            self.publish(self.answer_pub, make_answer_payload(context, status=status, text=reply))
+        except Exception as exc:
+            rospy.logerr("Pseudo-agent failed: %s\n%s", exc, traceback.format_exc())
+            text = "Ошибка pseudo-agent: %s" % exc
+            self.publish(self.status_pub, make_status_payload(context, status="error", text=text))
+            self.publish(self.answer_pub, make_answer_payload(context, status="error", text=text))
+        finally:
+            with self.lock:
+                self.active = False
+
+    def execute_text_command(self, text: str) -> dict[str, object]:
+        # A vote request, not a flight command - the regex parser below has
+        # no notion of free-text discussion and would just reject it as
+        # unsupported, so this is checked first and returns before ever
+        # reaching parse_text_command.
+        if text.strip().startswith(VOTE_PREFIX):
+            return self.execute_vote(text)
+
+        try:
+            command = parse_text_command(text)
+        except CommandParseError as exc:
+            return {"success": False, "reply": str(exc)}
+
+        if isinstance(command, InitializeCellCommand):
+            self.current_cell = command.cell
+            return {"success": True, "reply": "Текущая клетка установлена: %s." % command.cell}
+        if isinstance(command, ChessFlightCommand):
+            return self.execute_chess_flight(command)
+        if isinstance(command, RelativeFlightCommand):
+            return self.execute_relative_flight(command)
+        if isinstance(command, TakeoffCommand):
+            return self.execute_takeoff(command)
+        if isinstance(command, LandCommand):
+            return self.execute_land()
+        if isinstance(command, HoldCommand):
+            return self.execute_hold()
+        if isinstance(command, TelemetryCommand):
+            return self.execute_telemetry()
+        if isinstance(command, StatusCommand):
+            return self.execute_status()
+
+        return {"success": False, "reply": "Неизвестный тип команды."}
+
+    def execute_takeoff(self, command: TakeoffCommand) -> dict[str, object]:
+        height = self.takeoff_height_m if command.height_m is None else command.height_m
+        result = self.bridge.drone_takeoff(height_m=height, speed_mps=self.takeoff_speed_mps, wait=True)
+        if result.get("success"):
+            return {
+                "success": True,
+                "reply": "Взлёт выполнен на высоту %s м." % _format_distance(height),
+                "result": result,
+            }
+        return {"success": False, "reply": self._tool_error("Взлёт не выполнен", result), "result": result}
+
+    def execute_land(self) -> dict[str, object]:
+        result = self.bridge.drone_land(wait_until_disarmed=self.land_wait_until_disarmed)
+        if result.get("success"):
+            return {"success": True, "reply": "Посадка выполнена.", "result": result}
+        return {"success": False, "reply": self._tool_error("Посадка не выполнена", result), "result": result}
+
+    def execute_hold(self) -> dict[str, object]:
+        result = self.bridge.drone_hold_position()
+        if result.get("success"):
+            return {"success": True, "reply": "Дрон удерживает текущую позицию.", "result": result}
+        return {"success": False, "reply": self._tool_error("Не удалось включить удержание позиции", result), "result": result}
+
+    def execute_telemetry(self) -> dict[str, object]:
+        telemetry = self.bridge.drone_get_telemetry("map")
+        if not telemetry.get("success"):
+            return {
+                "success": False,
+                "reply": self._tool_error("Не удалось получить телеметрию", telemetry),
+                "result": telemetry,
+            }
+        reply = (
+            "Телеметрия: mode={mode}, armed={armed}, connected={connected}, "
+            "x={x}, y={y}, z={z}, voltage={voltage}."
+        ).format(
+            mode=telemetry.get("mode"),
+            armed=bool(telemetry.get("armed")),
+            connected=bool(telemetry.get("connected")),
+            x=_format_distance(telemetry.get("x", 0.0)),
+            y=_format_distance(telemetry.get("y", 0.0)),
+            z=_format_distance(telemetry.get("z", 0.0)),
+            voltage=_format_distance(telemetry.get("voltage", 0.0)),
+        )
+        return {"success": True, "reply": reply, "result": telemetry}
+
+    def execute_status(self) -> dict[str, object]:
+        status = self.bridge.drone_get_system_status()
+        if not status.get("success"):
+            return {
+                "success": False,
+                "reply": self._tool_error("Не удалось получить статус систем", status),
+                "result": status,
+            }
+        cell_text = self.current_cell if self.current_cell else "неизвестна"
+        reply = (
+            "Статус: ready_for_flight_commands={ready}, telemetry_connected={connected}, mode={mode}, "
+            "flight_tools_enabled={enabled}, текущая клетка={cell}."
+        ).format(
+            ready=bool(status.get("ready_for_flight_commands")),
+            connected=bool(status.get("telemetry_connected")),
+            mode=status.get("mode"),
+            enabled=bool(status.get("flight_tools_enabled")),
+            cell=cell_text,
+        )
+        return {"success": True, "reply": reply, "result": status}
+
+    def execute_vote(self, text: str) -> dict[str, object]:
+        """Answers a [ГОЛОСОВАНИЕ] move-negotiation request via a plain LLM
+        chat completion - reuses OpenRouterHost's HTTP call (_post_chat) but
+        with no MCP client/tool list, so the model has no tools to call at
+        all here; the only possible outcomes are a reply string or an
+        error, never a flight action."""
+
+        try:
+            response = self.vote_host._post_chat({
+                "model": self.vote_host.model,
+                "messages": [
+                    {"role": "system", "content": self.vote_host.system_prompt},
+                    {"role": "user", "content": text},
+                ],
+                "temperature": 0.2,
+            })
+            content = str(response["choices"][0]["message"]["content"] or "").strip()
+        except OpenRouterError as exc:
+            return {"success": False, "reply": "Ошибка агента: %s" % exc}
+        except (KeyError, IndexError, TypeError) as exc:
+            return {"success": False, "reply": "Некорректный ответ LLM на голосование: %s" % exc}
+
+        if not content:
+            return {"success": False, "reply": "LLM вернул пустой ответ на голосование."}
+        return {"success": True, "reply": content}
+
+    def execute_chess_flight(self, command: ChessFlightCommand) -> dict[str, object]:
+        if command.source_cell and self.current_cell and self.current_cell != command.source_cell:
+            rospy.logwarn(
+                "Pseudo-agent chess memory mismatch: command says %s, memory has %s. Flying by aruco_map target anyway.",
+                command.source_cell,
+                self.current_cell,
+            )
+
+        result = self.bridge.drone_navigate_to_chess_cell(
+            cell=command.target_cell,
+            takeoff_height_m=self.takeoff_height_m,
+            flight_altitude_m=self.takeoff_height_m,
+            speed_mps=self.move_speed_mps,
+            takeoff_speed_mps=self.takeoff_speed_mps,
+            land_after=True,
+            land_wait_until_disarmed=self.land_wait_until_disarmed,
+        )
+        if result.get("success"):
+            self.current_cell = command.target_cell
+            reply = "Перелёт в клетку %s выполнен." % command.target_cell
+            return {"success": True, "reply": reply, "result": result}
+        return {"success": False, "reply": self._tool_error("Шахматный перелёт не выполнен", result), "result": result}
+
+    def execute_relative_flight(self, command: RelativeFlightCommand) -> dict[str, object]:
+        sequence = self._build_travel_sequence(forward_m=command.forward_m, left_m=command.left_m)
+        result = self.bridge.drone_run_sequence(sequence)
+        if result.get("success"):
+            self.current_cell = None
+            reply = "Перелёт выполнен: вперед %s м, влево %s м." % (
+                _format_distance(command.forward_m),
+                _format_distance(command.left_m),
+            )
+            return {"success": True, "reply": reply, "result": result}
+        return {"success": False, "reply": self._tool_error("Перелёт не выполнен", result), "result": result}
+
+    def _build_travel_sequence(self, *, forward_m: float, left_m: float) -> list[dict[str, object]]:
+        steps: list[dict[str, object]] = [
+            {
+                "type": "drone_takeoff",
+                "height_m": self.takeoff_height_m,
+                "speed_mps": self.takeoff_speed_mps,
+                "wait": True,
+            }
+        ]
+        steps.extend(self._axis_steps(forward_m=forward_m, left_m=0.0))
+        steps.extend(self._axis_steps(forward_m=0.0, left_m=left_m))
+        steps.append({"type": "drone_land", "wait_until_disarmed": self.land_wait_until_disarmed})
+        return steps
+
+    def _axis_steps(self, *, forward_m: float, left_m: float) -> list[dict[str, object]]:
+        steps: list[dict[str, object]] = []
+        if abs(forward_m) > 1e-9:
+            for chunk in self._split_distance(forward_m, self.bridge.limits.max_relative_distance_m):
+                steps.append(
+                    {
+                        "type": "drone_move_relative",
+                        "forward_m": chunk,
+                        "left_m": 0.0,
+                        "up_m": 0.0,
+                        "speed_mps": self.move_speed_mps,
+                        "wait": True,
+                    }
+                )
+        if abs(left_m) > 1e-9:
+            for chunk in self._split_distance(left_m, self.bridge.limits.max_relative_distance_m):
+                steps.append(
+                    {
+                        "type": "drone_move_relative",
+                        "forward_m": 0.0,
+                        "left_m": chunk,
+                        "up_m": 0.0,
+                        "speed_mps": self.move_speed_mps,
+                        "wait": True,
+                    }
+                )
+        return steps
+
+    @staticmethod
+    def _split_distance(value_m: float, max_step_m: float) -> list[float]:
+        if max_step_m <= 0:
+            raise RuntimeError("Неверный лимит перемещения DRONE_MAX_RELATIVE_DISTANCE_M.")
+        if abs(value_m) < 1e-9:
+            return []
+        sign = 1.0 if value_m > 0 else -1.0
+        remaining = abs(value_m)
+        chunks: list[float] = []
+        while remaining > 1e-9:
+            chunk = min(remaining, max_step_m)
+            chunks.append(sign * chunk)
+            remaining -= chunk
+        return chunks
+
+    @staticmethod
+    def _tool_error(prefix: str, result: dict[str, object]) -> str:
+        def find_error(value: object) -> str | None:
+            if isinstance(value, dict):
+                for key in ("error", "message"):
+                    text = value.get(key)
+                    if isinstance(text, str) and text.strip():
+                        return text.strip()
+                for key in ("landing", "sequence", "takeoff", "arrival", "results", "result"):
+                    nested = find_error(value.get(key))
+                    if nested:
+                        return nested
+            elif isinstance(value, list):
+                for item in reversed(value):
+                    nested = find_error(item)
+                    if nested:
+                        return nested
+            return None
+
+        error = find_error(result) or "без подробностей"
+        return "%s: %s." % (prefix, error)
+
+
+def main():
+    rospy.init_node("drone_pseudo_agent_text_node")
+    DronePseudoAgentTextNodeRos1()
+    rospy.spin()
+
+
+if __name__ == "__main__":
+    main()
