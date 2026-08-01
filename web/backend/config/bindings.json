@@ -1,9 +1,9 @@
 {
-  "king": "drone-04",
+  "king": "king-8",
   "queen": "drone-02",
   "bishop_1": "drone-05",
   "bishop_2": "drone-04",
-  "knight_1": "sverk-8",
+  "knight_1": "drone-05",
   "knight_2": "drone-06",
   "rook_1": "peshka-02",
   "rook_2": "rover-01",

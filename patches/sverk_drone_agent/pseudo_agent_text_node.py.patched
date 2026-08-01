@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
 import threading
+import time
 import traceback
 
 import rospy
@@ -10,7 +14,6 @@ from std_msgs.msg import String
 
 from drone_agent_mcp_ros1.drone_ros_bridge import DroneRos1Bridge
 from drone_agent_mcp_ros1.fleet_protocol import make_answer_payload, make_status_payload, parse_command_payload
-from drone_agent_mcp_ros1.openrouter_host import OpenRouterError, OpenRouterHost
 from drone_agent_mcp_ros1.utils import json_dumps
 from drone_pseudo_agent_ros1.command_parser import (
     ChessFlightCommand,
@@ -38,6 +41,13 @@ VOTE_SYSTEM_PROMPT = (
     "«ХОД: <клетка>-<клетка>: <причина>». Никакого текста до или после "
     "этой строки, никакого markdown."
 )
+
+# The actual HTTP call for a vote lives in this standalone script, run as a
+# fresh subprocess rather than in-process - see execute_vote() and
+# vote_llm_call.py's own docstring for why (measured, reproducible
+# reliability difference between the same request run standalone vs from
+# inside this rospy node, root cause not fully isolated).
+VOTE_LLM_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vote_llm_call.py")
 
 
 def env_float(name: str, default: float) -> float:
@@ -72,13 +82,6 @@ class DronePseudoAgentTextNodeRos1:
         self.current_cell: str | None = None
         self.lock = threading.Lock()
         self.bridge = DroneRos1Bridge()
-        # Only used for [ГОЛОСОВАНИЕ] vote requests (see execute_vote) - reads
-        # OPENAI_API_KEY/OPENAI_MODEL/OPENAI_BASE_URL same as the real
-        # drone_agent_mcp_ros1 agent, but this instance is never given an MCP
-        # client/tool list, so it has no way to trigger any flight action -
-        # a vote request can only ever produce a plain reply string, never a
-        # tool call, regardless of what the model is asked or how it answers.
-        self.vote_host = OpenRouterHost(system_prompt=VOTE_SYSTEM_PROMPT)
 
         self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=10)
         self.answer_pub = rospy.Publisher(self.answer_topic, String, queue_size=10)
@@ -232,31 +235,63 @@ class DronePseudoAgentTextNodeRos1:
         )
         return {"success": True, "reply": reply, "result": status}
 
+    # Observed live on sverk-8/king-8 (2026-08-01): the exact same request
+    # to ai.sverk.io succeeds reliably (~0.15-4s) when run as an independent
+    # process, but was measurably less reliable from inside this rospy node
+    # (repeated HTTP 403 "Access denied by security policy", timeouts) -
+    # fixed by running the call in vote_llm_call.py as a fresh subprocess
+    # (see execute_vote below and that script's docstring) rather than
+    # in-process. Kept a couple of retries as a safety net for genuine
+    # transient blips. Budget matters here: the web dashboard's own
+    # move_orchestrator.py waits up to VOTE_ANSWER_TIMEOUT_SEC (60s as of
+    # 2026-08-01) for an answer - MAX_ATTEMPTS * (SUBPROCESS_TIMEOUT_SEC +
+    # RETRY_DELAY_SEC) must stay comfortably under that or a slow-but-
+    # eventually-successful vote gets counted as a no_response instead.
+    VOTE_MAX_ATTEMPTS = 3
+    VOTE_RETRY_DELAY_SEC = 1.0
+    VOTE_SUBPROCESS_TIMEOUT_SEC = 13.0
+
     def execute_vote(self, text: str) -> dict[str, object]:
         """Answers a [ГОЛОСОВАНИЕ] move-negotiation request via a plain LLM
-        chat completion - reuses OpenRouterHost's HTTP call (_post_chat) but
-        with no MCP client/tool list, so the model has no tools to call at
-        all here; the only possible outcomes are a reply string or an
-        error, never a flight action."""
+        chat completion, run in a fresh subprocess (vote_llm_call.py) rather
+        than in-process - see that script's docstring for why. The subprocess
+        has no MCP client/tool list and no ROS/rospy access at all, so the
+        model has no way to trigger a flight action here; the only possible
+        outcomes are a reply string or an error."""
 
-        try:
-            response = self.vote_host._post_chat({
-                "model": self.vote_host.model,
-                "messages": [
-                    {"role": "system", "content": self.vote_host.system_prompt},
-                    {"role": "user", "content": text},
-                ],
-                "temperature": 0.2,
-            })
-            content = str(response["choices"][0]["message"]["content"] or "").strip()
-        except OpenRouterError as exc:
-            return {"success": False, "reply": "Ошибка агента: %s" % exc}
-        except (KeyError, IndexError, TypeError) as exc:
-            return {"success": False, "reply": "Некорректный ответ LLM на голосование: %s" % exc}
+        request = json.dumps({
+            "base_url": os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
+            "api_key": os.getenv("OPENAI_API_KEY", ""),
+            "model": os.getenv("OPENAI_MODEL", ""),
+            "system_prompt": VOTE_SYSTEM_PROMPT,
+            "user_text": text,
+        }, ensure_ascii=False).encode("utf-8")
 
-        if not content:
-            return {"success": False, "reply": "LLM вернул пустой ответ на голосование."}
-        return {"success": True, "reply": content}
+        last_error = "неизвестная ошибка"
+        for attempt in range(1, self.VOTE_MAX_ATTEMPTS + 1):
+            try:
+                proc = subprocess.run(
+                    [sys.executable, VOTE_LLM_SCRIPT],
+                    input=request,
+                    capture_output=True,
+                    timeout=self.VOTE_SUBPROCESS_TIMEOUT_SEC,
+                )
+                result = json.loads(proc.stdout.decode("utf-8"))
+                if result.get("ok") and result.get("content"):
+                    return {"success": True, "reply": result["content"]}
+                last_error = result.get("error") or "LLM вернул пустой ответ на голосование."
+            except subprocess.TimeoutExpired:
+                last_error = "Таймаут запроса к LLM (%ss)." % self.VOTE_SUBPROCESS_TIMEOUT_SEC
+            except (json.JSONDecodeError, OSError) as exc:
+                last_error = "Не удалось выполнить запрос к LLM: %s" % exc
+
+            rospy.logwarn(
+                "Vote attempt %d/%d failed: %s", attempt, self.VOTE_MAX_ATTEMPTS, last_error
+            )
+            if attempt < self.VOTE_MAX_ATTEMPTS:
+                time.sleep(self.VOTE_RETRY_DELAY_SEC)
+
+        return {"success": False, "reply": "Ошибка агента: %s" % last_error}
 
     def execute_chess_flight(self, command: ChessFlightCommand) -> dict[str, object]:
         if command.source_cell and self.current_cell and self.current_cell != command.source_cell:

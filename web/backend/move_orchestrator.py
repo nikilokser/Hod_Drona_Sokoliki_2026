@@ -48,7 +48,12 @@ MAX_REGENERATIONS = 2
 # Illegal proposals rejected by our own local validator, before ever talking
 # to the drones - cheap, doesn't spend the regeneration budget above.
 MAX_LOCAL_RETRIES = 3
-VOTE_ANSWER_TIMEOUT_SEC = 30.0
+# A vote round-trip through a piece agent can involve the agent's own
+# retries against its LLM provider (see patches/sverk_drone_agent/0004 -
+# up to ~3 attempts with backoff, observed taking up to ~35-40s on a slow
+# gateway response) - 30s was cutting that off before an eventual real
+# answer could arrive, silently downgrading it to a no_response instead.
+VOTE_ANSWER_TIMEOUT_SEC = 60.0
 ALTERNATIVE_ESCALATION_THRESHOLD = 2
 
 PIECE_RU = {
@@ -189,7 +194,13 @@ def compute_quorum(app_state: dict) -> list[str]:
     than a hardcoded roster - a rover joins automatically once it is online
     with a working agent, and a drone that drops offline (observed on
     sverk-8) is automatically excluded instead of stalling the round on its
-    timeout."""
+    timeout.
+
+    Pawns are excluded from voting regardless of fleet.yaml's exact type
+    spelling for them - the organizers' sample config uses "esp32_pawn"
+    (see dark516/sverk_ai_communication_server), our own fleet.yaml has
+    historically used "peshka"; either way they have no per-piece voting
+    agent, only the single dispatcher this quorum check doesn't apply to."""
 
     robots_result = get_robots()
     if not robots_result.get("ok"):
@@ -198,7 +209,9 @@ def compute_quorum(app_state: dict) -> list[str]:
     online_non_pawn = {
         robot["robot_id"]
         for robot in robots_result["robots"]
-        if robot.get("online") and robot.get("enabled") and robot.get("type") != "peshka"
+        if robot.get("online")
+        and robot.get("enabled")
+        and robot.get("type") not in ("peshka", "esp32_pawn")
     }
     on_board_robot_ids = {
         occupant["robot_id"] for occupant in app_state["board"].values() if "robot_id" in occupant
@@ -323,10 +336,9 @@ def execute_move(app_state: dict, from_sq: str, to_sq: str) -> dict:
     if result["moved_robot_id"]:
         robot_id = result["moved_robot_id"]
         if new_board[to_sq]["piece"] == "pawn":
-            # Pawns aren't reachable through the Gateway at all - no MQTT
-            # bridge exists for them, only a direct HTTP API on their own IP
-            # (see peshka_client.py). This call is synchronous and already
-            # waits for the robot to report the real outcome, so none of the
+            # Pawns go through the Gateway too (see dispatch_pawn_move/
+            # peshka_client.py), but synchronously - like the voting calls
+            # below, it waits for the robot's real answer, so none of the
             # fire-and-forget/offline-tracking machinery below applies here.
             result["gateway_result"] = dispatch_pawn_move(app_state, robot_id, from_sq, to_sq)
         else:
@@ -354,29 +366,42 @@ def execute_move(app_state: dict, from_sq: str, to_sq: str) -> dict:
     return result
 
 
-def dispatch_pawn_move(app_state: dict, robot_id: str, from_sq: str, to_sq: str) -> dict:
-    """Drives a pawn robot from from_sq to to_sq over its direct HTTP API
-    and keeps our own heading tracking (app_state["peshka_headings"]) in
-    sync with what it actually did - the robot itself has no absolute
-    heading, only wheel encoder counters, so this is the only place that
-    knows which way it's currently facing on the board."""
+# A diagonal capture is three chained robot moves on the bridge's side
+# (turn, wait; forward, wait; turn back, wait) before it answers - needs
+# more headroom than a plain vote round-trip.
+PAWN_MOVE_TIMEOUT_SEC = 45.0
 
-    ip = app_state.get("peshka_ips", {}).get(robot_id)
-    if not ip:
+
+def dispatch_pawn_move(app_state: dict, robot_id: str, from_sq: str, to_sq: str) -> dict:
+    """Dispatches a pawn move through the Gateway's peshka-agent bridge -
+    same transport as every other piece (gateway_client.ask_robots), just
+    translated into the bridge's own restricted RU vocabulary first (see
+    peshka_client.classify_pawn_move/pawn_move_text)."""
+
+    move = peshka_client.classify_pawn_move(from_sq, to_sq, app_state["our_color"])
+    if move is None:
         return {
             "ok": False,
-            "error": f"IP пешки {robot_id} не настроен (см. web/backend/config/peshka_ips.json)",
+            "error": (
+                f"ход {from_sq}-{to_sq} не является обычным ходом пешки "
+                "(вперёд на 1-2 клетки или взятие по диагонали)"
+            ),
         }
 
-    headings = app_state.setdefault("peshka_headings", {})
-    current_heading = headings.get(
-        robot_id, peshka_client.initial_heading_deg(app_state["our_color"])
-    )
+    text = peshka_client.pawn_move_text(move)
+    dispatch = ask_robots([robot_id], text, timeout_sec=PAWN_MOVE_TIMEOUT_SEC)
+    if not dispatch.get("ok"):
+        return {"ok": False, "error": dispatch.get("error", "нет связи с Gateway")}
 
-    result = peshka_client.move_pawn_to_cell(ip, from_sq, to_sq, current_heading)
-    if result.get("ok"):
-        headings[robot_id] = result["resulting_heading_deg"]
-    return result
+    results = dispatch["response"].get("results", [])
+    if not results:
+        return {"ok": False, "error": "пешка не ответила"}
+
+    item = results[0]
+    if not item.get("success"):
+        return {"ok": False, "error": item.get("answer") or "пешка не подтвердила ход"}
+
+    return {"ok": True, "answer": item.get("answer")}
 
 
 async def propose_and_execute_move(
@@ -416,12 +441,11 @@ async def propose_and_execute_move(
         proposal = None
         for _ in range(MAX_LOCAL_RETRIES):
             # call_strong_model/compute_quorum/_collect_votes/execute_move are
-            # all plain blocking calls (sync httpx, even time.sleep() polling
-            # inside peshka_client) - run in a worker thread via to_thread so
-            # a single round (which can take minutes) doesn't freeze the
-            # entire asyncio event loop. Without this, Stockfish's continuous
-            # analysis background task and every other request to this
-            # backend would stall for the whole duration of the round.
+            # all plain blocking calls (sync httpx) - run in a worker thread
+            # via to_thread so a single round (which can take minutes) doesn't
+            # freeze the entire asyncio event loop. Without this, Stockfish's
+            # continuous analysis background task and every other request to
+            # this backend would stall for the whole duration of the round.
             candidate = await asyncio.to_thread(
                 call_strong_model, board_to_fen(app_state["board"], side_to_move), our_color, feedback
             )
