@@ -25,22 +25,43 @@ sudo systemctl status sverk-drone-agent.service --no-pager | head -6
 ## 1. Задать реальные учётные данные для LLM
 
 На дроне: `~/.sverk_drone_agent_env.sh` (или файл, на который указывает
-`SVERK_DRONE_AGENT_ENV_FILE` в override.conf). Найти и поправить три строки:
+`SVERK_DRONE_AGENT_ENV_FILE` в override.conf) — там уже есть строки
+`OPENAI_BASE_URL`/`OPENAI_MODEL`/`OPENAI_API_KEY`, их нужно поправить на
+проверенные значения. **Единственное, что нужно вписывать руками — ключ**
+(секрет, в репозиторий и в этот файл-инструкцию не кладём). Всё остальное —
+уже готовые, подтверждённые рабочими 2026-08-01 значения:
+
+- `OPENAI_BASE_URL='https://ai.sverk.io/v1'`
+- `OPENAI_MODEL='gemma-4-31b'` — быстрая (~0.15-4с на тёплом вызове),
+  подтверждённо доступна ключу, использовавшемуся при отладке 0004 на
+  king-8. Из проверенных тем же ключом альтернатив (если понадобится
+  сменить модель): `deepseek-v4-pro`, `Gemma 4`, `gemma4-vlm`, `куцк`.
+  **Не ставить** `deepseek-v4-flash` — 2026-08-01 стабильно падала 500-й
+  ошибкой у самого провайдера (`Connection error`, не наша проблема, но
+  сама модель в тот день была недоступна).
+- `LLM_API_KEY_ENV='OPENAI_API_KEY'` — не трогать, уже верно.
+
+Применить одной командой на дроне (заменяет только эти строки, остальной
+файл — `CHESS_*`/`FLEET_*`/лимиты полёта и т.п. — не трогает):
 
 ```bash
-grep -n 'OPENAI_API_KEY\|OPENAI_MODEL\|OPENAI_BASE_URL' ~/.sverk_drone_agent_env.sh
+sed -i "s|^export OPENAI_BASE_URL=.*|export OPENAI_BASE_URL='https://ai.sverk.io/v1'|" ~/.sverk_drone_agent_env.sh
+sed -i "s|^export OPENAI_MODEL=.*|export OPENAI_MODEL='gemma-4-31b'|" ~/.sverk_drone_agent_env.sh
+sed -i "s|^export OPENAI_API_KEY=.*|export OPENAI_API_KEY='ВСТАВЬТЕ_КЛЮЧ_СЮДА'|" ~/.sverk_drone_agent_env.sh
 ```
 
-- `OPENAI_BASE_URL='https://ai.sverk.io/v1'` — обычно уже стоит правильно.
-- `OPENAI_API_KEY='...'` — вписать реальный ключ шлюза (тот же, что уже
-  используется на king-8 / для `STRONG_MODEL_API_KEY` в `web/backend/.env`
-  нашего веб-бэкенда).
-- `OPENAI_MODEL='...'` — **не любая модель подходит конкретному ключу**.
-  Проверенные рабочие модели с ключом, который использовался 2026-08-01:
-  `gemma-4-31b`, `deepseek-v4-pro`, `Gemma 4`, `gemma4-vlm`, `куцк`.
-  `deepseek-v4-flash` в тот день падала 500-й у самого провайдера — не
-  ставить, пока не перепроверите отдельно. Если ключ другой — проверить
-  доступные модели можно одним запросом:
+Затем открыть файл (`nano ~/.sverk_drone_agent_env.sh`) и вручную заменить
+`ВСТАВЬТЕ_КЛЮЧ_СЮДА` на реальный ключ шлюза (тот же, что на king-8 и в
+`STRONG_MODEL_API_KEY` из `web/backend/.env` нашего веб-бэкенда). Проверить,
+что подставилось верно (без вывода самого ключа):
+
+```bash
+grep -c "OPENAI_API_KEY='ВСТАВЬТЕ_КЛЮЧ_СЮДА'" ~/.sverk_drone_agent_env.sh   # должно быть 0
+grep -c "OPENAI_API_KEY=''" ~/.sverk_drone_agent_env.sh                     # должно быть 0
+```
+
+Если ключ на этом дроне окажется **другим** (не тем, что на king-8) и
+`gemma-4-31b` ему недоступна — узнать реально доступные этому ключу модели:
 
 ```bash
 curl -s https://ai.sverk.io/v1/chat/completions \
@@ -49,10 +70,8 @@ curl -s https://ai.sverk.io/v1/chat/completions \
 ```
 
 Ответ вида `"key not allowed to access model. This key can only access
-models=[...]"` перечислит реально доступные модели этому ключу — берите
-любую из списка. Правьте файл прямо на дроне (`nano`/`vi`), не через scp
-локального файла — там в нём же лежат остальные боевые настройки поля
-(`CHESS_*`, `FLEET_*`), перезаписывать файл целиком нельзя.
+models=[...]"` перечислит реально доступные модели — взять любую из списка
+и поставить в `OPENAI_MODEL` тем же способом.
 
 ## 2. Скопировать файлы патча
 
