@@ -46,8 +46,15 @@ STRONG_MODEL_NAME = os.environ.get("STRONG_MODEL_NAME", "deepseek-v4-pro")
 
 MAX_REGENERATIONS = 2
 # Illegal proposals rejected by our own local validator, before ever talking
-# to the drones - cheap, doesn't spend the regeneration budget above.
-MAX_LOCAL_RETRIES = 3
+# to the drones - cheap, doesn't spend the regeneration budget above. Also
+# reused for model_error retries (a failed HTTP call to the strong model,
+# see propose_and_execute_move) - each attempt now fails fast (20s timeout,
+# see call_strong_model) rather than hanging, so more attempts costs little
+# in the typical case (a real answer is fast) and meaningfully improves the
+# odds of getting past a transient blip. Worst case if every attempt fails:
+# MAX_LOCAL_RETRIES * (20s timeout + 1s backoff) ~= 105s, well inside the
+# regulation's 5-minute move limit.
+MAX_LOCAL_RETRIES = 5
 # A vote round-trip through a piece agent can involve the agent's own
 # retries against its LLM provider (see patches/sverk_drone_agent/0004 -
 # up to ~3 attempts with backoff, observed taking up to ~35-40s on a slow

@@ -255,8 +255,9 @@ class DronePseudoAgentTextNodeRos1:
     # waits up to VOTE_ANSWER_TIMEOUT_SEC (60s as of 2026-08-01) for an
     # answer - MAX_ATTEMPTS * (SUBPROCESS_TIMEOUT_SEC + RETRY_DELAY_SEC)
     # must stay comfortably under that or a slow-but-eventually-successful
-    # vote gets counted as a no_response instead.
-    VOTE_MAX_ATTEMPTS = 3
+    # vote gets counted as a no_response instead. 5 * (8 + 0.5) = 42s,
+    # ~18s of margin under the 60s ceiling.
+    VOTE_MAX_ATTEMPTS = 5
     VOTE_RETRY_DELAY_SEC = 0.5
     VOTE_SUBPROCESS_TIMEOUT_SEC = 8.0
 
