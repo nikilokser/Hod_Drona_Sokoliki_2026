@@ -72,7 +72,7 @@ body {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 20px 20px 48px;
   gap: 20px;
@@ -295,6 +295,21 @@ select {
   margin-left: auto;
 }
 
+/* Time-limit inputs live in the "Привязка роботов" tab (see index.html) -
+   that tab isn't the default one shown, which keeps them out of plain
+   reach on an operator screen that's also visible to the opponent/
+   spectators during a live match, without needing any custom show/hide
+   logic of its own. */
+.clock-settings-row input {
+  width: 56px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Captured-pieces tally - a sidebar to the left of the board, mirroring the
    chat panel on the right. Large icons on purpose (per user request) with a
    fixed light backdrop chip behind each: black piece art is solid black
@@ -304,9 +319,10 @@ select {
    --light-square, deliberately theme-independent). */
 
 .captured-sidebar {
-  width: 168px;
+  width: 190px;
+  flex-shrink: 0;
   max-width: 100%;
-  max-height: 678px;
+  max-height: 648px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -365,6 +381,8 @@ select {
   display: flex;
   align-items: stretch;
   gap: 10px;
+  flex-shrink: 1;
+  min-width: 0;
 }
 
 .board-area {
@@ -518,12 +536,16 @@ select {
   fill: #4f8fe0;
 }
 
-/* Chat panel */
+/* Chat panel - sidebar next to the board (third column of .main-row,
+   after .captured-sidebar/.board-eval-wrap). flex:1 rather than a fixed
+   width so it always soaks up whatever width is left in the row, which is
+   what keeps .main-row's total width matching the full-width panels above/
+   below it (.clock-panel/.tabs-panel) as board/sidebar sizes change. */
 
 .chat-panel {
-  width: 340px;
-  max-width: 100%;
-  max-height: 678px;
+  flex: 1 1 320px;
+  min-width: 280px;
+  max-height: 648px;
   display: flex;
   flex-direction: column;
   background: var(--surface);
@@ -547,10 +569,21 @@ select {
   font-weight: 600;
 }
 
+.chat-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
 .chat-filter-toggle {
   font-size: 0.72rem;
   color: var(--text-muted);
   white-space: nowrap;
+}
+
+#chat-clear-button {
+  padding: 4px 10px;
+  font-size: 0.75rem;
 }
 
 .chat-feed {
@@ -563,7 +596,7 @@ select {
 }
 
 .chat-event {
-  max-width: 85%;
+  max-width: 90%;
   padding: 6px 10px;
   border-radius: 8px;
   font-size: 0.78rem;
@@ -741,8 +774,35 @@ select {
   line-height: 1.4;
 }
 
+.orchestrator-reasoning {
+  font-style: italic;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+}
+
 .orchestrator-no-response {
   color: var(--danger);
+}
+
+.orchestrator-vote {
+  padding-left: 8px;
+}
+
+.orchestrator-vote-yes {
+  color: var(--success);
+}
+
+.orchestrator-vote-no {
+  color: var(--danger);
+}
+
+.orchestrator-vote-move {
+  color: var(--accent);
+}
+
+.orchestrator-vote-noise {
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 /* Robot alerts - a dispatched move whose robot went offline before we ever
@@ -785,6 +845,22 @@ select {
 
 .robot-alert-dismiss:hover {
   opacity: 0.7;
+}
+
+/* Bindings tab: online robots not bound to any current piece - see
+   renderUnboundOnlineWarning in board.js. Same danger treatment as robot
+   alerts (it's a real problem: these robots silently never get asked to
+   vote), but a plain banner rather than a dismiss-able list since it's a
+   live, recomputed fact rather than a one-off event. */
+.unbound-online-warning {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text);
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  margin-bottom: 12px;
 }
 
 /* Messages */
@@ -918,7 +994,9 @@ button:disabled:hover {
   }
 
   .chat-panel {
+    flex: none;
     width: auto;
+    min-width: 0;
     max-height: 320px;
   }
 

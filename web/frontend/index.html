@@ -95,13 +95,16 @@
         </main>
       </div>
 
-      <aside class="chat-panel">
+      <section class="chat-panel">
         <div class="chat-panel-header">
           <h3>Лента переговоров</h3>
-          <label class="toggle-label chat-filter-toggle">
-            <input type="checkbox" id="chat-show-system-toggle" />
-            + системные события
-          </label>
+          <div class="chat-panel-actions">
+            <label class="toggle-label chat-filter-toggle">
+              <input type="checkbox" id="chat-show-system-toggle" />
+              + системные события
+            </label>
+            <button id="chat-clear-button" class="danger-button" type="button">Очистить</button>
+          </div>
         </div>
         <div id="chat-feed" class="chat-feed"></div>
         <form id="chat-send-form" class="chat-send-form">
@@ -113,7 +116,7 @@
           />
           <button type="submit">Отправить</button>
         </form>
-      </aside>
+      </section>
     </div>
 
     <div class="tabs-panel">
@@ -136,8 +139,21 @@
       </div>
 
       <div class="tab-panel" data-tab-panel="bindings" hidden>
+        <div id="unbound-online-warning" class="unbound-online-warning" hidden></div>
         <div id="bindings-list" class="bindings-list"></div>
         <button id="reset-button" class="danger-button" type="button">Сбросить поле</button>
+
+        <div class="analysis-panel-row clock-settings-row">
+          <div class="toolbar-group">
+            <span class="toolbar-label">Лимит хода, мин</span>
+            <input id="move-limit-input" type="number" min="1" step="1" />
+          </div>
+          <div class="toolbar-group">
+            <span class="toolbar-label">Лимит матча, мин</span>
+            <input id="match-limit-input" type="number" min="1" step="1" />
+          </div>
+          <button id="clock-settings-apply" type="button">Применить лимиты</button>
+        </div>
       </div>
 
       <div class="tab-panel" data-tab-panel="analysis" hidden>

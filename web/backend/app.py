@@ -16,6 +16,7 @@ load_dotenv()
 
 from bindings import load_bindings, save_bindings  # noqa: E402
 from chat_feed import dedupe_events, load_chat_events, run_chat_feed  # noqa: E402
+from excluded_roles import load_excluded_roles, save_excluded_roles  # noqa: E402
 from gateway_client import get_robots, send_chat_message  # noqa: E402
 from match_clock import (  # noqa: E402
     end_match,
@@ -74,6 +75,9 @@ app_state: dict = {
     "peshka_ips": load_peshka_ips(),
     "peshka_headings": {},
     "captured_pieces": [],
+    "move_limit_sec": 5 * 60,
+    "match_limit_sec": 2 * 60 * 60,
+    "excluded_roles": load_excluded_roles(),
 }
 
 
@@ -149,6 +153,35 @@ async def set_binding(payload: BindingRequest) -> dict:
     app_state["bindings"][payload.role] = payload.robot_id
     save_bindings(app_state["bindings"])
     app_state["board"] = rebind_role(app_state["board"], payload.role, payload.robot_id)
+
+    await manager.broadcast(app_state)
+    return app_state
+
+
+class ExcludeRoleRequest(BaseModel):
+    role: str
+    excluded: bool
+
+
+@app.post("/api/bindings/exclude")
+async def set_role_excluded(payload: ExcludeRoleRequest) -> dict:
+    """Marks/unmarks a piece role as excluded from moves - e.g. its robot is
+    known broken (stuck kill switch, offline for the match). Excluded roles
+    are skipped by the AI orchestrator's proposals and refused by manual
+    dispatch (see move_orchestrator.py), but stay on the board and can still
+    be repositioned via "correct" mode - this is about not commanding the
+    robot, not about hiding the piece."""
+
+    if payload.role not in ALL_ROLES:
+        raise HTTPException(status_code=422, detail=f"неизвестная роль: {payload.role}")
+
+    excluded = set(app_state.get("excluded_roles", []))
+    if payload.excluded:
+        excluded.add(payload.role)
+    else:
+        excluded.discard(payload.role)
+    app_state["excluded_roles"] = sorted(excluded)
+    save_excluded_roles(app_state["excluded_roles"])
 
     await manager.broadcast(app_state)
     return app_state
@@ -243,6 +276,18 @@ async def send_chat(payload: ChatSendRequest) -> dict:
     return send_chat_message(payload.text)
 
 
+@app.post("/api/chat/clear")
+async def clear_chat() -> dict:
+    # Clears only the in-memory/displayed feed, not the on-disk
+    # chat_history.jsonl log (that's the permanent match record, by design -
+    # see chat_feed.py). A backend restart or Gateway resync will reload the
+    # full history from disk/Gateway again, so this is a "declutter my
+    # current view" action, not a permanent delete.
+    app_state["chat_events"] = []
+    await manager.broadcast(app_state)
+    return app_state
+
+
 @app.post("/api/match/start")
 async def start_match_clock() -> dict:
     app_state["match_clock"] = start_match()
@@ -290,6 +335,22 @@ async def end_match_clock() -> dict:
     return app_state
 
 
+class MatchLimitsRequest(BaseModel):
+    move_limit_sec: int
+    match_limit_sec: int
+
+
+@app.post("/api/match/limits")
+async def set_match_limits(payload: MatchLimitsRequest) -> dict:
+    if payload.move_limit_sec <= 0 or payload.match_limit_sec <= 0:
+        raise HTTPException(status_code=422, detail="лимиты должны быть положительными")
+
+    app_state["move_limit_sec"] = payload.move_limit_sec
+    app_state["match_limit_sec"] = payload.match_limit_sec
+    await manager.broadcast(app_state)
+    return app_state
+
+
 @app.post("/api/side-to-move")
 async def set_side_to_move(payload: ColorRequest) -> dict:
     app_state["side_to_move"] = payload.color
@@ -318,4 +379,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         manager.disconnect(websocket)
 
 
-app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+class NoCacheStaticFiles(StaticFiles):
+    """Frontend files are actively edited during development and re-served
+    from the same URLs on every change - without this, browsers can serve a
+    stale cached board.js/styles.css/index.html after a plain reload (no
+    explicit Cache-Control header means some browsers apply heuristic
+    caching), which looks indistinguishable from a real layout/JS bug."""
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/", NoCacheStaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

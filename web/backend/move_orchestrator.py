@@ -15,6 +15,7 @@ drag-and-drop already uses.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -82,11 +83,14 @@ def to_validator_board(board: dict, side_to_move: str) -> dict:
 
 
 def _is_legal_move(
-    board: dict, side_to_move: str, from_sq: str, to_sq: str
+    board: dict, side_to_move: str, from_sq: str, to_sq: str, excluded_roles: list[str] = ()
 ) -> tuple[bool, str | None]:
     occupant = board.get(from_sq)
     if occupant is None:
         return False, f"На клетке {from_sq} нет фигуры"
+
+    if occupant.get("role") in excluded_roles:
+        return False, f"Фигура «{occupant['role']}» исключена из ходов оператором"
 
     result = validate_move(
         to_validator_board(board, side_to_move),
@@ -287,6 +291,17 @@ def execute_move(app_state: dict, from_sq: str, to_sq: str) -> dict:
     ever called), so nothing upstream relies on this function refusing an
     out-of-turn move."""
 
+    occupant = app_state["board"].get(from_sq)
+    excluded_role = occupant.get("role") if occupant else None
+    if excluded_role and excluded_role in app_state.get("excluded_roles", []):
+        return {
+            "ok": False,
+            "error": (
+                f"фигура «{excluded_role}» исключена из ходов оператором "
+                "(см. вкладку «Привязка роботов»)"
+            ),
+        }
+
     new_board, result = apply_move(
         app_state["board"], "manual", from_sq, to_sq, our_color=app_state["our_color"]
     )
@@ -400,8 +415,15 @@ async def propose_and_execute_move(
     while True:
         proposal = None
         for _ in range(MAX_LOCAL_RETRIES):
-            candidate = call_strong_model(
-                board_to_fen(app_state["board"], side_to_move), our_color, feedback
+            # call_strong_model/compute_quorum/_collect_votes/execute_move are
+            # all plain blocking calls (sync httpx, even time.sleep() polling
+            # inside peshka_client) - run in a worker thread via to_thread so
+            # a single round (which can take minutes) doesn't freeze the
+            # entire asyncio event loop. Without this, Stockfish's continuous
+            # analysis background task and every other request to this
+            # backend would stall for the whole duration of the round.
+            candidate = await asyncio.to_thread(
+                call_strong_model, board_to_fen(app_state["board"], side_to_move), our_color, feedback
             )
             if not candidate.get("ok"):
                 attempts.append({"proposal": candidate, "outcome": "model_error"})
@@ -410,7 +432,11 @@ async def propose_and_execute_move(
                 return {"ok": False, "error": candidate.get("error"), "attempts": attempts}
 
             legal, reason = _is_legal_move(
-                app_state["board"], side_to_move, candidate["from"], candidate["to"]
+                app_state["board"],
+                side_to_move,
+                candidate["from"],
+                candidate["to"],
+                app_state.get("excluded_roles", []),
             )
             if legal:
                 proposal = {**candidate, "piece": app_state["board"][candidate["from"]]["piece"]}
@@ -430,14 +456,15 @@ async def propose_and_execute_move(
                 "attempts": attempts,
             }
 
-        quorum = compute_quorum(app_state)
+        quorum = await asyncio.to_thread(compute_quorum, app_state)
         if not quorum:
             attempts.append({"proposal": proposal, "outcome": "accepted_no_quorum", "quorum": []})
             await broadcast(app_state)
             accepted_proposal = proposal
             break
 
-        vote_result = _collect_votes(
+        vote_result = await asyncio.to_thread(
+            _collect_votes,
             quorum,
             board_to_fen(app_state["board"], side_to_move),
             proposal["piece"],
@@ -479,7 +506,9 @@ async def propose_and_execute_move(
                 f"Причины: {reasons or 'без деталей'}. Предложи другой ход."
             )
 
-    result = execute_move(app_state, accepted_proposal["from"], accepted_proposal["to"])
+    result = await asyncio.to_thread(
+        execute_move, app_state, accepted_proposal["from"], accepted_proposal["to"]
+    )
     round_log["final_proposal"] = accepted_proposal
     round_log["execution"] = result
     round_log["in_progress"] = False

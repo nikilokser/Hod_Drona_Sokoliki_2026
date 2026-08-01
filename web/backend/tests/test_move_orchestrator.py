@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -316,6 +317,16 @@ def test_execute_move_allows_out_of_turn_move():
         result = move_orchestrator.execute_move(app_state, "g1", "f3")
     assert result["ok"] is True
     mock_send.assert_called_once_with("drone-06", "f3")
+
+
+def test_execute_move_refuses_excluded_role_without_dispatching():
+    app_state = make_app_state(excluded_roles=["knight_2"])
+    with patch("move_orchestrator.send_fly_command") as mock_send:
+        result = move_orchestrator.execute_move(app_state, "g1", "f3")
+    assert result["ok"] is False
+    assert "исключена" in result["error"]
+    mock_send.assert_not_called()
+    assert app_state["board"]["g1"]["piece"] == "knight"  # board unchanged
 
 
 def test_execute_move_records_captured_piece_in_app_state():
@@ -716,3 +727,48 @@ def test_dispatch_pawn_move_failure_does_not_update_heading():
 
     assert result["ok"] is False
     assert app_state["peshka_headings"]["peshka-05"] == 90.0
+
+
+# --- propose_and_execute_move must not block the event loop -------------------------
+
+
+@pytest.mark.asyncio
+async def test_propose_and_execute_move_does_not_block_event_loop(monkeypatch):
+    # call_strong_model is a plain blocking call (sync httpx under the hood);
+    # simulating that with a real blocking time.sleep() here and proving a
+    # concurrently-running coroutine keeps making progress is what actually
+    # demonstrates the event loop wasn't frozen for the duration - a mock
+    # that returns instantly wouldn't catch a regression back to a bare
+    # (unwrapped) synchronous call.
+    import time
+
+    app_state = make_app_state()
+    monkeypatch.setattr(
+        move_orchestrator,
+        "call_strong_model",
+        lambda fen, color, feedback=None: (
+            time.sleep(0.3),
+            {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
+        )[1],
+    )
+    monkeypatch.setattr(move_orchestrator, "compute_quorum", lambda app_state: [])
+
+    tick_count = 0
+
+    async def ticker():
+        nonlocal tick_count
+        while True:
+            await asyncio.sleep(0.02)
+            tick_count += 1
+
+    ticker_task = asyncio.create_task(ticker())
+    try:
+        with patch("move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}):
+            result = await move_orchestrator.propose_and_execute_move(app_state, _noop_broadcast)
+    finally:
+        ticker_task.cancel()
+
+    assert result["ok"] is True
+    # A blocked event loop would let the 0.3s sleep starve the ticker
+    # entirely (0-1 ticks); a healthy one lets it fire roughly every 20ms.
+    assert tick_count >= 5

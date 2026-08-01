@@ -61,6 +61,7 @@ const confirmOkButton = document.getElementById("confirm-ok");
 const confirmCancelButton = document.getElementById("confirm-cancel");
 const chatFeed = document.getElementById("chat-feed");
 const chatShowSystemToggle = document.getElementById("chat-show-system-toggle");
+const chatClearButton = document.getElementById("chat-clear-button");
 const chatSendForm = document.getElementById("chat-send-form");
 const chatSendInput = document.getElementById("chat-send-input");
 const clockTurnEl = document.getElementById("clock-turn");
@@ -70,6 +71,9 @@ const matchStartButton = document.getElementById("match-start-button");
 const turnDoneButton = document.getElementById("turn-done-button");
 const matchPauseButton = document.getElementById("match-pause-button");
 const matchEndButton = document.getElementById("match-end-button");
+const moveLimitInput = document.getElementById("move-limit-input");
+const matchLimitInput = document.getElementById("match-limit-input");
+const clockSettingsApplyButton = document.getElementById("clock-settings-apply");
 const sideToMoveSelect = document.getElementById("side-to-move-select");
 const stockfishToggle = document.getElementById("stockfish-toggle");
 const stockfishResultEl = document.getElementById("stockfish-result");
@@ -86,8 +90,11 @@ const robotAlertsEl = document.getElementById("robot-alerts");
 const tabButtons = document.querySelectorAll(".tab-button");
 const tabPanels = document.querySelectorAll(".tab-panel");
 
-const MOVE_LIMIT_SEC = 5 * 60;
-const MATCH_LIMIT_SEC = 2 * 60 * 60;
+// Fallbacks only for the brief window before the first state broadcast
+// arrives - after that, the real limits always come from currentState
+// (see /api/match/limits), so an operator can change them mid-session.
+const DEFAULT_MOVE_LIMIT_SEC = 5 * 60;
+const DEFAULT_MATCH_LIMIT_SEC = 2 * 60 * 60;
 
 let currentState = null;
 let latestRobots = [];
@@ -184,6 +191,7 @@ function render(state) {
   renderRobotAlerts(state);
   renderLastMoveBanner(state);
   renderCapturedPanel(state);
+  renderUnboundOnlineWarning(state);
 
   if (drag) {
     // A drag gesture is in progress on the board - rebuilding the SVG now
@@ -413,6 +421,20 @@ const ORCHESTRATOR_OUTCOME_LABELS = {
   local_validation_exhausted: "модель не смогла предложить легальный ход",
 };
 
+const VOTE_KIND_LABELS = {
+  yes: "да",
+  no: "нет",
+  move: "предложил другой ход",
+  // "noise" covers any answer that came back but didn't match the expected
+  // ДА:/НЕТ:/ХОД: protocol - e.g. a robot's agent replying with its own
+  // canned "command not supported" text because it doesn't actually
+  // recognize the [ГОЛОСОВАНИЕ] prefix as a valid input at all. It doesn't
+  // count toward the decision, but it's still worth showing: the robot DID
+  // answer, just not usefully - different from no_response (didn't answer
+  // at all).
+  noise: "ответ не по формату",
+};
+
 function renderOrchestratorPanel(state) {
   // TEMPORARY: also allowed in "view" for debugging the orchestrator
   // end-to-end without switching modes - mirrors the same relaxation in
@@ -498,6 +520,34 @@ function renderOrchestratorLog(state) {
       const forcedText = attempt.forced_after_regeneration_limit ? " (без консенсуса)" : "";
       line.textContent = `${proposalText} — ${outcomeText}${forcedText}`;
       card.appendChild(line);
+
+      // The model's own reasoning for the proposal - shown regardless of
+      // whether any agents voted on it (accepted_no_quorum in particular has
+      // no votes to show at all, so this is the only content that explains
+      // why this move was picked).
+      if (proposal && proposal.reasoning) {
+        const reasoningLine = document.createElement("div");
+        reasoningLine.className = "orchestrator-attempt orchestrator-reasoning";
+        reasoningLine.textContent = proposal.reasoning;
+        card.appendChild(reasoningLine);
+      }
+
+      if (attempt.votes && attempt.votes.length > 0) {
+        // Per-robot breakdown, not just the round's aggregate outcome -
+        // makes it visible that an agent actually took part in the
+        // discussion even when its vote didn't end up swaying anything
+        // (e.g. a lone "нет" against an otherwise silent quorum, or a
+        // reply that came back but was off-protocol noise).
+        for (const vote of attempt.votes) {
+          const voteLine = document.createElement("div");
+          voteLine.className = `orchestrator-attempt orchestrator-vote orchestrator-vote-${vote.kind}`;
+          const kindText = VOTE_KIND_LABELS[vote.kind] || vote.kind;
+          const moveText = vote.kind === "move" && vote.move ? ` ${vote.move.from}-${vote.move.to}` : "";
+          const reasonText = vote.reason ? `: ${vote.reason}` : "";
+          voteLine.textContent = `${vote.robot_id} — ${kindText}${moveText}${reasonText}`;
+          card.appendChild(voteLine);
+        }
+      }
 
       if (attempt.no_response && attempt.no_response.length > 0) {
         // Quorum members who were asked to vote but never returned a usable
@@ -628,7 +678,19 @@ function renderClockPanel(state) {
   matchPauseButton.textContent = clock.status === "paused" ? "Продолжить" : "Пауза";
   matchEndButton.disabled = !canPauseOrResume;
 
+  syncClockSettingsInputs(state);
   tickClocks(); // update the numbers immediately instead of waiting up to 1s
+}
+
+// Only overwrites the number inputs when the operator isn't actively editing
+// them - render() runs on every broadcast (every ~0.5-1s while Stockfish is
+// on), so unconditionally overwriting .value would make it impossible to
+// type a new limit.
+function syncClockSettingsInputs(state) {
+  const moveLimitMin = Math.round((state.move_limit_sec ?? DEFAULT_MOVE_LIMIT_SEC) / 60);
+  const matchLimitMin = Math.round((state.match_limit_sec ?? DEFAULT_MATCH_LIMIT_SEC) / 60);
+  if (document.activeElement !== moveLimitInput) moveLimitInput.value = moveLimitMin;
+  if (document.activeElement !== matchLimitInput) matchLimitInput.value = matchLimitMin;
 }
 
 function formatDuration(totalSeconds) {
@@ -645,10 +707,12 @@ function formatDuration(totalSeconds) {
 function tickClocks() {
   if (!currentState) return;
   const clock = currentState.match_clock;
+  const moveLimitSec = currentState.move_limit_sec ?? DEFAULT_MOVE_LIMIT_SEC;
+  const matchLimitSec = currentState.match_limit_sec ?? DEFAULT_MATCH_LIMIT_SEC;
 
   if (clock.status === "idle") {
-    clockMoveEl.textContent = formatDuration(MOVE_LIMIT_SEC);
-    clockMatchEl.textContent = formatDuration(MATCH_LIMIT_SEC);
+    clockMoveEl.textContent = formatDuration(moveLimitSec);
+    clockMatchEl.textContent = formatDuration(matchLimitSec);
     clockMoveEl.classList.remove("overtime");
     clockMatchEl.classList.remove("overtime");
     return;
@@ -662,8 +726,8 @@ function tickClocks() {
 
   const moveElapsed = (referenceNow - new Date(clock.move_started_at).getTime()) / 1000;
   const matchElapsed = (referenceNow - new Date(clock.match_started_at).getTime()) / 1000;
-  const moveRemaining = MOVE_LIMIT_SEC - moveElapsed;
-  const matchRemaining = MATCH_LIMIT_SEC - matchElapsed;
+  const moveRemaining = moveLimitSec - moveElapsed;
+  const matchRemaining = matchLimitSec - matchElapsed;
 
   clockMoveEl.textContent = formatDuration(moveRemaining);
   clockMatchEl.textContent = formatDuration(matchRemaining);
@@ -735,6 +799,30 @@ matchEndButton.addEventListener("click", async () => {
 });
 
 setInterval(tickClocks, 1000);
+
+async function apiSetMatchLimits(moveLimitSec, matchLimitSec) {
+  const response = await fetch("/api/match/limits", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ move_limit_sec: moveLimitSec, match_limit_sec: matchLimitSec }),
+  });
+  if (!response.ok) {
+    const body = await response.json();
+    showMessage(body.detail || "Не удалось применить лимиты времени", "error");
+    return;
+  }
+  clearMessage();
+}
+
+clockSettingsApplyButton.addEventListener("click", () => {
+  const moveLimitMin = Number(moveLimitInput.value);
+  const matchLimitMin = Number(matchLimitInput.value);
+  if (!(moveLimitMin > 0) || !(matchLimitMin > 0)) {
+    showMessage("Лимиты времени должны быть положительными числами", "error");
+    return;
+  }
+  apiSetMatchLimits(Math.round(moveLimitMin * 60), Math.round(matchLimitMin * 60));
+});
 
 // Gateway sends event_type "command"/"answer" for actual negotiation/move
 // text, and "status"/"availability"/"error"/"system" for chatter that isn't
@@ -902,7 +990,42 @@ async function refreshRobots() {
   gatewayStatus.textContent = gatewayOk ? "Gateway: подключён" : "Gateway: недоступен";
   gatewayStatus.classList.toggle("disconnected", !gatewayOk);
 
-  if (currentState) renderBindingsPanel(currentState);
+  if (currentState) {
+    renderBindingsPanel(currentState);
+    renderUnboundOnlineWarning(currentState);
+  }
+}
+
+// A robot can be online in the Gateway's registry and still never get
+// asked to vote in a move negotiation, silently, if it isn't bound to any
+// piece currently on the board (compute_quorum in move_orchestrator.py
+// requires both) - e.g. bindings still pointing at placeholder robot_ids
+// that don't match the real fleet. Surfacing this explicitly is what makes
+// that fixable instead of a mystery "why doesn't it ever vote".
+function renderUnboundOnlineWarning(state) {
+  const el = document.getElementById("unbound-online-warning");
+  if (!state.board) {
+    el.hidden = true;
+    return;
+  }
+
+  const boundRobotIds = new Set(
+    Object.values(state.board).map((occupant) => occupant.robot_id).filter(Boolean)
+  );
+  const unbound = latestRobots.filter(
+    (robot) =>
+      robot.online && robot.enabled && robot.type !== "peshka" && !boundRobotIds.has(robot.robot_id)
+  );
+
+  if (unbound.length === 0) {
+    el.hidden = true;
+    return;
+  }
+
+  el.hidden = false;
+  el.textContent =
+    `Онлайн, но не привязаны ни к одной фигуре: ${unbound.map((r) => r.robot_id).join(", ")} — ` +
+    "не будут участвовать в голосовании ИИ, пока не привязаны ниже.";
 }
 
 function renderLabels() {
@@ -1166,6 +1289,14 @@ resetButton.addEventListener("click", async () => {
 chatShowSystemToggle.addEventListener("change", () => {
   chatShowSystemEvents = chatShowSystemToggle.checked;
   if (currentState) renderChatFeed(currentState);
+});
+
+chatClearButton.addEventListener("click", async () => {
+  const confirmed = await confirmDialog(
+    "Очистить ленту переговоров? Это скроет текущую историю в интерфейсе " +
+    "(лог на диске не удаляется)."
+  );
+  if (confirmed) await fetch("/api/chat/clear", { method: "POST" });
 });
 
 chatSendForm.addEventListener("submit", async (evt) => {

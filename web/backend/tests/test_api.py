@@ -14,8 +14,10 @@ from state import initial_board
 
 @pytest.fixture(autouse=True)
 def reset_state(monkeypatch):
-    # Never let a test write to the real config/bindings.json.
+    # Never let a test write to the real config/bindings.json or
+    # config/excluded_roles.json.
     monkeypatch.setattr(app_module, "save_bindings", lambda bindings: None)
+    monkeypatch.setattr(app_module, "save_excluded_roles", lambda roles: None)
 
     fresh_bindings = dict(app_module._initial_bindings)
     app_module.app_state["bindings"] = fresh_bindings
@@ -32,6 +34,7 @@ def reset_state(monkeypatch):
     app_module.app_state["side_to_move"] = "white"
     app_module.app_state["stockfish_enabled"] = False
     app_module.app_state["captured_pieces"] = []
+    app_module.app_state["excluded_roles"] = []
     yield
 
 
@@ -411,3 +414,61 @@ def test_stockfish_enable_toggles_flag(client):
     response = client.post("/api/stockfish/enable", json={"enabled": False})
     assert response.status_code == 200
     assert app_module.app_state["stockfish_enabled"] is False
+
+
+def test_match_limits_updates_state(client):
+    response = client.post(
+        "/api/match/limits", json={"move_limit_sec": 180, "match_limit_sec": 5400}
+    )
+    assert response.status_code == 200
+    assert app_module.app_state["move_limit_sec"] == 180
+    assert app_module.app_state["match_limit_sec"] == 5400
+
+
+def test_match_limits_rejects_non_positive_values(client):
+    response = client.post(
+        "/api/match/limits", json={"move_limit_sec": 0, "match_limit_sec": 5400}
+    )
+    assert response.status_code == 422
+
+
+def test_chat_clear_empties_chat_events(client):
+    app_module.app_state["chat_events"] = [
+        {"event_type": "command", "text": "hi", "direction": "outgoing"}
+    ]
+    response = client.post("/api/chat/clear")
+    assert response.status_code == 200
+    assert app_module.app_state["chat_events"] == []
+
+
+def test_exclude_role_adds_and_removes(client):
+    response = client.post(
+        "/api/bindings/exclude", json={"role": "knight_1", "excluded": True}
+    )
+    assert response.status_code == 200
+    assert app_module.app_state["excluded_roles"] == ["knight_1"]
+
+    response = client.post(
+        "/api/bindings/exclude", json={"role": "knight_1", "excluded": False}
+    )
+    assert response.status_code == 200
+    assert app_module.app_state["excluded_roles"] == []
+
+
+def test_exclude_role_rejects_unknown_role(client):
+    response = client.post(
+        "/api/bindings/exclude", json={"role": "dragon", "excluded": True}
+    )
+    assert response.status_code == 422
+    assert "dragon" not in app_module.app_state["excluded_roles"]
+
+
+def test_manual_move_refused_for_excluded_role(client):
+    client.post("/api/mode", json={"mode": "manual"})
+    client.post("/api/bindings", json={"role": "knight_1", "robot_id": "drone-99"})
+    client.post("/api/bindings/exclude", json={"role": "knight_1", "excluded": True})
+
+    response = client.post("/api/move", json={"from": "b1", "to": "c3"})
+    assert response.status_code == 400
+    assert "исключена" in response.json()["detail"]
+    assert app_module.app_state["board"]["b1"]["role"] == "knight_1"
