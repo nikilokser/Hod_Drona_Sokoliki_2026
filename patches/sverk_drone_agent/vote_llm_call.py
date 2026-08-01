@@ -73,10 +73,10 @@ def main() -> None:
         "%s/chat/completions" % base_url, data=encoded, headers=headers, method="POST"
     )
     try:
-        # Comfortably under the caller's subprocess timeout (13s as of
+        # Comfortably under the caller's subprocess timeout (8s as of
         # 2026-08-01, see pseudo_agent_text_node.py's VOTE_SUBPROCESS_TIMEOUT_SEC)
         # so this can return a clean JSON error instead of getting killed.
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with urllib.request.urlopen(req, timeout=6) as response:
             body = json.loads(response.read().decode("utf-8"))
         content = str(body["choices"][0]["message"]["content"] or "").strip()
         print(json.dumps({"ok": True, "content": content}, ensure_ascii=False))

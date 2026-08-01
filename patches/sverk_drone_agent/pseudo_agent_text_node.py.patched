@@ -242,14 +242,23 @@ class DronePseudoAgentTextNodeRos1:
     # fixed by running the call in vote_llm_call.py as a fresh subprocess
     # (see execute_vote below and that script's docstring) rather than
     # in-process. Kept a couple of retries as a safety net for genuine
-    # transient blips. Budget matters here: the web dashboard's own
-    # move_orchestrator.py waits up to VOTE_ANSWER_TIMEOUT_SEC (60s as of
-    # 2026-08-01) for an answer - MAX_ATTEMPTS * (SUBPROCESS_TIMEOUT_SEC +
-    # RETRY_DELAY_SEC) must stay comfortably under that or a slow-but-
-    # eventually-successful vote gets counted as a no_response instead.
+    # transient blips.
+    #
+    # Timeout kept short on purpose (not generous): a real answer is always
+    # fast (~0.15-4s observed) - a slow request is not "about to succeed if
+    # we just wait longer", it's a bad request that keeps failing, and
+    # waiting out a long timeout per attempt only makes the operator stare
+    # at the dashboard longer before the SAME retry logic tries again anyway.
+    # Failing each attempt fast means more attempts fit in the same overall
+    # budget, and the round finishes (success or failure) sooner either way.
+    # Budget matters here: the web dashboard's own move_orchestrator.py
+    # waits up to VOTE_ANSWER_TIMEOUT_SEC (60s as of 2026-08-01) for an
+    # answer - MAX_ATTEMPTS * (SUBPROCESS_TIMEOUT_SEC + RETRY_DELAY_SEC)
+    # must stay comfortably under that or a slow-but-eventually-successful
+    # vote gets counted as a no_response instead.
     VOTE_MAX_ATTEMPTS = 3
-    VOTE_RETRY_DELAY_SEC = 1.0
-    VOTE_SUBPROCESS_TIMEOUT_SEC = 13.0
+    VOTE_RETRY_DELAY_SEC = 0.5
+    VOTE_SUBPROCESS_TIMEOUT_SEC = 8.0
 
     def execute_vote(self, text: str) -> dict[str, object]:
         """Answers a [ГОЛОСОВАНИЕ] move-negotiation request via a plain LLM

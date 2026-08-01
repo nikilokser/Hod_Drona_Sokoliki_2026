@@ -1,7 +1,7 @@
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -401,16 +401,51 @@ async def test_propose_and_execute_move_rejects_excluded_role_proposal(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_propose_and_execute_move_model_error_aborts(monkeypatch):
+async def test_propose_and_execute_move_model_error_retries_then_fails(monkeypatch):
+    # A network blip talking to the strong model shouldn't abort the whole
+    # round on the very first failure - it retries within the same
+    # MAX_LOCAL_RETRIES budget used for illegal-move retries, so a
+    # consistently-unavailable model still eventually fails, but only after
+    # actually trying a few times.
+    call_count = {"n": 0}
+
+    def fake_call(fen, color, feedback=None):
+        call_count["n"] += 1
+        return {"ok": False, "error": "модель недоступна"}
+
     app_state = make_app_state()
-    monkeypatch.setattr(
-        move_orchestrator,
-        "call_strong_model",
-        lambda fen, color, feedback=None: {"ok": False, "error": "модель недоступна"},
-    )
+    monkeypatch.setattr(move_orchestrator, "call_strong_model", fake_call)
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
     result = await move_orchestrator.propose_and_execute_move(app_state, _noop_broadcast)
+
     assert result["ok"] is False
     assert "недоступна" in result["error"]
+    assert call_count["n"] == move_orchestrator.MAX_LOCAL_RETRIES
+    model_error_attempts = [a for a in result["attempts"] if a.get("outcome") == "model_error"]
+    assert len(model_error_attempts) == move_orchestrator.MAX_LOCAL_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_propose_and_execute_move_recovers_after_transient_model_error(monkeypatch):
+    responses = [
+        {"ok": False, "error": "таймаут"},
+        {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
+    ]
+
+    def fake_call(fen, color, feedback=None):
+        return responses.pop(0)
+
+    app_state = make_app_state()
+    monkeypatch.setattr(move_orchestrator, "call_strong_model", fake_call)
+    monkeypatch.setattr(move_orchestrator, "compute_quorum", lambda app_state: [])
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    with patch("move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}):
+        result = await move_orchestrator.propose_and_execute_move(app_state, _noop_broadcast)
+
+    assert result["ok"] is True
+    assert app_state["board"]["f3"]["piece"] == "knight"
 
 
 @pytest.mark.asyncio
@@ -509,12 +544,12 @@ async def test_propose_and_execute_move_pawn_proposal_accepted(monkeypatch):
     )
     monkeypatch.setattr(move_orchestrator, "compute_quorum", lambda app_state: [])
 
-    # Pawns are dispatched through peshka_client.dispatch_pawn_move (direct
-    # HTTP to the robot's own IP), never through the Gateway.
+    # Pawns are dispatched through dispatch_pawn_move (Gateway + the
+    # peshka-agent bridge's own RU vocabulary), not send_fly_command.
     with (
         patch(
             "move_orchestrator.dispatch_pawn_move",
-            return_value={"ok": True, "resulting_heading_deg": 0.0},
+            return_value={"ok": True, "answer": "Сходила вперёд на две клетки."},
         ) as mock_dispatch,
         patch("move_orchestrator.send_fly_command") as mock_send,
     ):
@@ -679,75 +714,78 @@ def test_execute_move_does_not_track_when_gateway_rejects_without_message_id():
     assert app_state.get("pending_robot_moves", {}) == {}
 
 
-# --- pawn moves dispatch through peshka_client, not the Gateway ---------------------
+# --- pawn moves dispatch through the Gateway's peshka-agent bridge -------------------
 
 
-def test_execute_move_routes_pawn_through_peshka_client():
-    app_state = make_app_state(peshka_ips={"peshka-05": "10.0.0.5"})
+def _gateway_dispatch_ok(answer="Сходила вперёд на одну клетку."):
+    return {"ok": True, "response": {"results": [
+        {"robot_id": "peshka-05", "success": True, "answer": answer}
+    ]}}
+
+
+def test_execute_move_routes_pawn_through_gateway():
+    app_state = make_app_state()
     with (
         patch(
-            "move_orchestrator.peshka_client.move_pawn_to_cell",
-            return_value={"ok": True, "resulting_heading_deg": 0.0},
-        ) as mock_move,
+            "move_orchestrator.ask_robots", return_value=_gateway_dispatch_ok()
+        ) as mock_ask,
         patch("move_orchestrator.send_fly_command") as mock_send,
     ):
         result = move_orchestrator.execute_move(app_state, "e2", "e4")
 
     assert result["ok"] is True
-    assert result["gateway_result"] == {"ok": True, "resulting_heading_deg": 0.0}
-    mock_move.assert_called_once_with("10.0.0.5", "e2", "e4", 0.0)
-    mock_send.assert_not_called()
-    assert app_state["peshka_headings"]["peshka-05"] == 0.0
-
-
-def test_dispatch_pawn_move_uses_color_based_default_heading():
-    app_state = make_app_state(our_color="black", peshka_ips={"peshka-05": "10.0.0.5"})
-    with patch(
-        "move_orchestrator.peshka_client.move_pawn_to_cell",
-        return_value={"ok": True, "resulting_heading_deg": 180.0},
-    ) as mock_move:
-        move_orchestrator.dispatch_pawn_move(app_state, "peshka-05", "e7", "e5")
-
-    # Black's default starting heading is 180 deg (see peshka_client.initial_heading_deg).
-    mock_move.assert_called_once_with("10.0.0.5", "e7", "e5", 180.0)
-
-
-def test_dispatch_pawn_move_reuses_previously_tracked_heading():
-    app_state = make_app_state(
-        peshka_ips={"peshka-05": "10.0.0.5"}, peshka_headings={"peshka-05": 315.0}
+    assert result["gateway_result"]["ok"] is True
+    mock_ask.assert_called_once_with(
+        ["peshka-05"], "вперёд на две клетки", timeout_sec=move_orchestrator.PAWN_MOVE_TIMEOUT_SEC
     )
+    mock_send.assert_not_called()
+
+
+def test_dispatch_pawn_move_sends_diagonal_text_for_capture():
+    app_state = make_app_state()
     with patch(
-        "move_orchestrator.peshka_client.move_pawn_to_cell",
-        return_value={"ok": True, "resulting_heading_deg": 270.0},
-    ) as mock_move:
-        move_orchestrator.dispatch_pawn_move(app_state, "peshka-05", "d5", "c5")
+        "move_orchestrator.ask_robots", return_value=_gateway_dispatch_ok("Сходила по диагонали.")
+    ) as mock_ask:
+        result = move_orchestrator.dispatch_pawn_move(app_state, "peshka-05", "e4", "f5")
 
-    mock_move.assert_called_once_with("10.0.0.5", "d5", "c5", 315.0)
-    assert app_state["peshka_headings"]["peshka-05"] == 270.0
+    assert result["ok"] is True
+    mock_ask.assert_called_once_with(
+        ["peshka-05"], "по диагонали вправо", timeout_sec=move_orchestrator.PAWN_MOVE_TIMEOUT_SEC
+    )
 
 
-def test_dispatch_pawn_move_missing_ip_returns_clean_error_without_network_call():
-    app_state = make_app_state(peshka_ips={})
-    with patch("move_orchestrator.peshka_client.move_pawn_to_cell") as mock_move:
-        result = move_orchestrator.dispatch_pawn_move(app_state, "peshka-05", "e2", "e4")
+def test_dispatch_pawn_move_rejects_shape_no_pawn_can_take_without_network_call():
+    app_state = make_app_state()
+    with patch("move_orchestrator.ask_robots") as mock_ask:
+        result = move_orchestrator.dispatch_pawn_move(app_state, "peshka-05", "b1", "c3")
 
     assert result["ok"] is False
-    assert "peshka-05" in result["error"]
-    mock_move.assert_not_called()
+    assert "e2" not in result["error"]  # sanity: real error mentions b1-c3, not a stale square
+    assert "b1" in result["error"] and "c3" in result["error"]
+    mock_ask.assert_not_called()
 
 
-def test_dispatch_pawn_move_failure_does_not_update_heading():
-    app_state = make_app_state(
-        peshka_ips={"peshka-05": "10.0.0.5"}, peshka_headings={"peshka-05": 90.0}
-    )
+def test_dispatch_pawn_move_gateway_unreachable():
+    app_state = make_app_state()
     with patch(
-        "move_orchestrator.peshka_client.move_pawn_to_cell",
-        return_value={"ok": False, "error": "нет связи"},
+        "move_orchestrator.ask_robots", return_value={"ok": False, "error": "connection refused"}
     ):
         result = move_orchestrator.dispatch_pawn_move(app_state, "peshka-05", "e2", "e4")
 
     assert result["ok"] is False
-    assert app_state["peshka_headings"]["peshka-05"] == 90.0
+    assert "connection refused" in result["error"]
+
+
+def test_dispatch_pawn_move_robot_reports_failure():
+    app_state = make_app_state()
+    dispatch = {"ok": True, "response": {"results": [
+        {"robot_id": "peshka-05", "success": False, "answer": "Занята, выполняю предыдущий ход."}
+    ]}}
+    with patch("move_orchestrator.ask_robots", return_value=dispatch):
+        result = move_orchestrator.dispatch_pawn_move(app_state, "peshka-05", "e2", "e4")
+
+    assert result["ok"] is False
+    assert "Занята" in result["error"]
 
 
 # --- propose_and_execute_move must not block the event loop -------------------------

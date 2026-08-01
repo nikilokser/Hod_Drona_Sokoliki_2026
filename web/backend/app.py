@@ -27,7 +27,6 @@ from match_clock import (  # noqa: E402
     sync_active_color,
 )
 from move_orchestrator import execute_move, propose_and_execute_move  # noqa: E402
-from peshka_client import load_peshka_ips  # noqa: E402
 from state import ALL_ROLES, apply_move, delete_piece, initial_board, rebind_role  # noqa: E402
 from stockfish_client import run_continuous_analysis, start_engine, stop_engine  # noqa: E402
 from ws_manager import ConnectionManager  # noqa: E402
@@ -72,8 +71,6 @@ app_state: dict = {
     "pending_robot_moves": {},
     "robot_alerts": [],
     "last_move": None,
-    "peshka_ips": load_peshka_ips(),
-    "peshka_headings": {},
     "captured_pieces": [],
     "move_limit_sec": 5 * 60,
     "match_limit_sec": 2 * 60 * 60,

@@ -136,7 +136,13 @@ def call_strong_model(fen: str, our_color: str, feedback: str | None = None) -> 
             f"{STRONG_MODEL_BASE_URL}/chat/completions",
             json=payload,
             headers={"Authorization": f"Bearer {STRONG_MODEL_API_KEY}"},
-            timeout=60.0,
+            # Short on purpose: when the gateway is having a bad moment, a
+            # slow request usually just hangs rather than eventually
+            # succeeding - a 60s timeout meant one bad request cost the
+            # whole round a minute before the (already-fast, same-day-
+            # observed <5s typical) retry even got a chance to run. Better
+            # to fail this one attempt quickly and let the caller retry.
+            timeout=20.0,
         )
         response.raise_for_status()
         data = response.json()
@@ -439,7 +445,8 @@ async def propose_and_execute_move(
 
     while True:
         proposal = None
-        for _ in range(MAX_LOCAL_RETRIES):
+        last_model_error: str | None = None
+        for attempt_index in range(MAX_LOCAL_RETRIES):
             # call_strong_model/compute_quorum/_collect_votes/execute_move are
             # all plain blocking calls (sync httpx) - run in a worker thread
             # via to_thread so a single round (which can take minutes) doesn't
@@ -450,10 +457,19 @@ async def propose_and_execute_move(
                 call_strong_model, board_to_fen(app_state["board"], side_to_move), our_color, feedback
             )
             if not candidate.get("ok"):
+                # A network blip/timeout talking to the model is exactly the
+                # kind of thing that's usually fine on the very next try (see
+                # the shortened per-call timeout above) - retrying here in the
+                # same MAX_LOCAL_RETRIES budget used for illegal-move retries
+                # means one bad request no longer aborts the whole round
+                # immediately, forcing the frontend/operator to restart the
+                # entire round (model call + voting) from scratch.
                 attempts.append({"proposal": candidate, "outcome": "model_error"})
-                round_log["in_progress"] = False
                 await broadcast(app_state)
-                return {"ok": False, "error": candidate.get("error"), "attempts": attempts}
+                last_model_error = candidate.get("error")
+                if attempt_index < MAX_LOCAL_RETRIES - 1:
+                    await asyncio.sleep(1.0)
+                continue
 
             legal, reason = _is_legal_move(
                 app_state["board"],
@@ -464,7 +480,9 @@ async def propose_and_execute_move(
             )
             if legal:
                 proposal = {**candidate, "piece": app_state["board"][candidate["from"]]["piece"]}
+                last_model_error = None
                 break
+            last_model_error = None
             feedback = (
                 f"Предыдущее предложение {candidate.get('from')}-{candidate.get('to')} "
                 f"отклонено локальной проверкой: {reason}. Предложи другой ход."
@@ -476,7 +494,7 @@ async def propose_and_execute_move(
             await broadcast(app_state)
             return {
                 "ok": False,
-                "error": "Не удалось получить легальный ход от модели",
+                "error": last_model_error or "Не удалось получить легальный ход от модели",
                 "attempts": attempts,
             }
 
