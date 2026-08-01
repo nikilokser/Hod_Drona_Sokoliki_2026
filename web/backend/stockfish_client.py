@@ -151,8 +151,15 @@ async def run_continuous_analysis(
 ) -> None:
     """Background task: while stockfish_enabled is on, keeps re-analysing
     the current position for whoever is on move and pushing updates.
-    Each analysis call already takes ~CONTINUOUS_MOVETIME_MS, so that
-    paces the loop naturally - no extra sleep needed while enabled."""
+    A real analysis call already takes ~CONTINUOUS_MOVETIME_MS, which paces
+    the loop naturally - but get_best_move can also return an error
+    synchronously with no await at all (engine not running, or an invalid
+    board with != 1 king per side from manual drag-and-drop testing). Without
+    an unconditional sleep, that turns this into a tight loop that pegs a CPU
+    core and starves the asyncio event loop for the whole process - observed
+    live 2026-08-02 as the actual cause of "the model doesn't respond" and
+    "chat doesn't always arrive" (both are just other coroutines never
+    getting scheduled)."""
 
     while True:
         if app_state.get("stockfish_enabled"):
@@ -167,5 +174,5 @@ async def run_continuous_analysis(
         if apply_analysis_result(app_state, result):
             await broadcast(app_state)
 
-        if result is None:
+        if result is None or not result.get("ok"):
             await asyncio.sleep(DISABLED_POLL_INTERVAL_SEC)
