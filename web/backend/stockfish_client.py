@@ -44,11 +44,16 @@ def _has_one_king_per_side(board: dict) -> bool:
     return white_kings == 1 and black_kings == 1
 
 
-def board_to_fen(board: dict, side_to_move: str) -> str:
+def board_to_fen(board: dict, side_to_move: str, fullmove_number: int = 1) -> str:
     """Convert our board dict ({"e2": {"color": "white", "piece": "pawn"}})
     into a FEN string. Castling/en-passant are always "-" (not part of our
-    simplified rules), move counters are fixed placeholders - none of that
-    affects Stockfish's evaluation of the given position."""
+    simplified rules) and the halfmove clock is always "0" (we don't track
+    it, and it doesn't affect Stockfish's evaluation) - but fullmove_number
+    should be the real move count (see app_state["fullmove_number"] in
+    scoring.py), not left at the "1" default: the AI orchestrator's prompt
+    includes this FEN, and a wrong/stuck move number there was observed
+    live 2026-08-02 misleading the model about how far into the game it
+    was."""
 
     rows = []
     for rank in range(8, 0, -1):
@@ -71,7 +76,7 @@ def board_to_fen(board: dict, side_to_move: str) -> str:
 
     placement = "/".join(rows)
     side_letter = "w" if side_to_move == "white" else "b"
-    return f"{placement} {side_letter} - - 0 1"
+    return f"{placement} {side_letter} - - 0 {fullmove_number}"
 
 
 async def start_engine() -> None:
@@ -92,7 +97,10 @@ async def stop_engine() -> None:
 
 
 async def get_best_move(
-    board: dict, side_to_move: str, movetime_ms: int = DEFAULT_MOVETIME_MS
+    board: dict,
+    side_to_move: str,
+    movetime_ms: int = DEFAULT_MOVETIME_MS,
+    fullmove_number: int = 1,
 ) -> dict:
     if _engine is None:
         return {"ok": False, "error": "Stockfish не установлен или не запущен"}
@@ -102,7 +110,7 @@ async def get_best_move(
         # feeding that position to the engine produces nonsense/errors.
         return {"ok": False, "error": "На доске должно быть по одному королю каждого цвета"}
 
-    fen = board_to_fen(board, side_to_move)
+    fen = board_to_fen(board, side_to_move, fullmove_number)
     try:
         chess_board = chess.Board(fen)
     except ValueError as exc:
@@ -167,6 +175,7 @@ async def run_continuous_analysis(
                 app_state["board"],
                 app_state["side_to_move"],
                 movetime_ms=CONTINUOUS_MOVETIME_MS,
+                fullmove_number=app_state.get("fullmove_number", 1),
             )
         else:
             result = None

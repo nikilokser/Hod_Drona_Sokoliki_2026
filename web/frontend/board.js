@@ -55,6 +55,8 @@ const gatewayStatus = document.getElementById("gateway-status");
 const bindingsList = document.getElementById("bindings-list");
 const messageBar = document.getElementById("message-bar");
 const resetButton = document.getElementById("reset-button");
+const boardVariantSelect = document.getElementById("board-variant-select");
+const scoreDisplayEl = document.getElementById("score-display");
 const confirmOverlay = document.getElementById("confirm-overlay");
 const confirmText = document.getElementById("confirm-text");
 const confirmOkButton = document.getElementById("confirm-ok");
@@ -182,6 +184,9 @@ function render(state) {
   boardFlipped = state.our_color === "black";
   modeSelect.value = state.mode;
   colorSelect.value = state.our_color;
+  if (document.activeElement !== boardVariantSelect) {
+    boardVariantSelect.value = state.board_variant;
+  }
 
   renderBindingsPanel(state);
   renderChatFeed(state);
@@ -292,6 +297,9 @@ const capturedOursEl = document.getElementById("captured-ours");
 const CAPTURED_SORT_ORDER = ["queen", "rook", "bishop", "knight", "pawn"];
 
 function renderCapturedPanel(state) {
+  const score = state.score || { ours: 0, theirs: 0 };
+  scoreDisplayEl.textContent = `${score.ours} : ${score.theirs}`;
+
   const captured = state.captured_pieces || [];
   // Grouped by "ours" vs "theirs" (our_color perspective) rather than raw
   // white/black, so the panel reads correctly regardless of which side we
@@ -1330,6 +1338,14 @@ async function apiResetBoard() {
   await fetch("/api/reset", { method: "POST" });
 }
 
+async function apiSetBoardVariant(variant) {
+  await fetch("/api/board-variant", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ variant }),
+  });
+}
+
 async function apiSendChatMessage(text) {
   const response = await fetch("/api/chat/send", {
     method: "POST",
@@ -1346,6 +1362,17 @@ resetButton.addEventListener("click", async () => {
     "Сбросить поле в стартовую позицию? Текущее состояние партии на доске будет потеряно."
   );
   if (confirmed) apiResetBoard();
+});
+
+boardVariantSelect.addEventListener("change", async () => {
+  const confirmed = await confirmDialog(
+    "Сменить расстановку и сразу сбросить поле? Текущее состояние партии будет потеряно."
+  );
+  if (confirmed) {
+    apiSetBoardVariant(boardVariantSelect.value);
+  } else if (currentState) {
+    boardVariantSelect.value = currentState.board_variant;
+  }
 });
 
 chatShowSystemToggle.addEventListener("change", () => {

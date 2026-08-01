@@ -40,6 +40,20 @@ def test_board_to_fen_black_to_move():
     assert fen.split(" ")[1] == "b"
 
 
+def test_board_to_fen_defaults_fullmove_number_to_1():
+    board = initial_board("white", BINDINGS)
+    fen = stockfish_client.board_to_fen(board, "white")
+    assert fen.split(" ")[-1] == "1"
+
+
+def test_board_to_fen_uses_given_fullmove_number():
+    board = initial_board("white", BINDINGS)
+    fen = stockfish_client.board_to_fen(board, "white", fullmove_number=17)
+    assert fen.split(" ")[-1] == "17"
+    # must still parse as a valid chess.Board
+    chess.Board(fen)
+
+
 def test_board_to_fen_sparse_position():
     board = {
         "e1": {"color": "white", "piece": "king"},

@@ -75,6 +75,10 @@
     <div class="main-row">
       <aside class="captured-sidebar">
         <div class="captured-sidebar-group">
+          <span class="captured-sidebar-label">Счёт (оценка)</span>
+          <span id="score-display" class="score-display">0 : 0</span>
+        </div>
+        <div class="captured-sidebar-group">
           <span class="captured-sidebar-label">Взято у соперника</span>
           <div class="captured-sidebar-icons" id="captured-theirs"></div>
         </div>
@@ -141,7 +145,16 @@
       <div class="tab-panel" data-tab-panel="bindings" hidden>
         <div id="unbound-online-warning" class="unbound-online-warning" hidden></div>
         <div id="bindings-list" class="bindings-list"></div>
-        <button id="reset-button" class="danger-button" type="button">Сбросить поле</button>
+        <div class="analysis-panel-row">
+          <div class="toolbar-group">
+            <span class="toolbar-label">Расстановка</span>
+            <select id="board-variant-select">
+              <option value="semifinal">Полуфинал (1 ладья, 4 пешки)</option>
+              <option value="full">Финал (полный комплект)</option>
+            </select>
+          </div>
+          <button id="reset-button" class="danger-button" type="button">Сбросить поле</button>
+        </div>
 
         <div class="analysis-panel-row clock-settings-row">
           <div class="toolbar-group">

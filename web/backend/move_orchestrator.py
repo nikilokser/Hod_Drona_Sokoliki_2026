@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -37,6 +38,7 @@ from move_validator import validate_move  # noqa: E402 (see sys.path setup above
 import peshka_client
 from gateway_client import ask_robots, get_robots, send_fly_command
 from match_clock import sync_active_color
+from scoring import average_move_sec, record_real_move, total_score
 from state import apply_move
 from stockfish_client import board_to_fen
 
@@ -74,8 +76,24 @@ PIECE_RU = {
 
 STRONG_MODEL_SYSTEM_PROMPT = (
     "Ты выбираешь ход за сторону {color} в упрощённых шахматах (без рокировки, "
-    "взятия на проходе, превращения пешки). Ходить можно любой своей фигурой, "
-    "включая пешки. Верни только JSON без markdown и пояснений вне полей: "
+    "взятия на проходе, превращения пешки, повторения позиции, правила 50 ходов; "
+    "ничьи нет — при пате или истечении лимита времени матча побеждает тот, у "
+    "кого больше очков). Ходить можно любой своей фигурой, включая пешки.\n\n"
+    "Начисление очков по регламенту: свой ход вовремя +1, взятие пешки +10, "
+    "коня или слона +30, ладьи +50, ферзя +90, шах +50, мат — победа сразу. "
+    "Штрафы: невозможный ход -5, просрочка хода -10. Тебе в каждом сообщении "
+    "дают текущий счёт (свой и соперника) и оставшееся время матча/хода — "
+    "используй это в решении. Партия короткая (лимит матча около часа, до 5 "
+    "минут на ход) и до мата в реальности почти никогда не доходят — итог "
+    "почти всегда решают очки, а не мат. Поэтому: если размен или взятие даёт "
+    "выгодные очки — играть на это часто выгоднее пассивной позиционной игры, "
+    "даже когда позиционно ход не лучший. Если по времени/счёту видно, что "
+    "партия скорее всего закончится раньше, чем соперник успеет наказать за "
+    "риск (мало времени матча осталось, у соперника ходы медленные) — можно "
+    "пойти на ход, рискованный вдолгую, ради очков сейчас. Если, наоборот, "
+    "времени много и позиция важнее конкретных очков одного хода — играй "
+    "нормально, позиционно.\n\n"
+    "Верни только JSON без markdown и пояснений вне полей: "
     '{{"from": "e2", "to": "e4", "reasoning": "короткое обоснование по-русски"}}.'
 )
 
@@ -113,9 +131,68 @@ def _is_legal_move(
     return True, None
 
 
-def _build_strong_model_messages(fen: str, our_color: str, feedback: str | None) -> list[dict]:
+def _format_sec(sec: float) -> str:
+    minutes, seconds = divmod(max(0, int(sec)), 60)
+    return f"{minutes}:{seconds:02d}"
+
+
+def _build_time_score_context(app_state: dict) -> str:
+    """Renders current score + time-remaining context for the LLM prompt -
+    see scoring.py's docstring for what's tracked and why (approximate,
+    not an official scoreboard). Never raises - falls back to a minimal
+    line if match_clock timestamps are missing/malformed (e.g. before the
+    match has ever been started)."""
+
+    score = total_score(app_state)
+    clock = app_state.get("match_clock", {})
+    match_limit = app_state.get("match_limit_sec", 7200)
+    move_limit = app_state.get("move_limit_sec", 300)
+
+    try:
+        now = datetime.now(timezone.utc)
+        if clock.get("status") == "running" and clock.get("match_started_at"):
+            match_elapsed = (now - datetime.fromisoformat(clock["match_started_at"])).total_seconds()
+        elif clock.get("status") in ("paused", "finished") and clock.get("match_started_at") and clock.get("frozen_at"):
+            match_elapsed = (
+                datetime.fromisoformat(clock["frozen_at"]) - datetime.fromisoformat(clock["match_started_at"])
+            ).total_seconds()
+        else:
+            match_elapsed = 0.0
+        match_remaining = max(0.0, match_limit - match_elapsed)
+
+        if clock.get("status") == "running" and clock.get("move_started_at"):
+            move_remaining = max(
+                0.0, move_limit - (now - datetime.fromisoformat(clock["move_started_at"])).total_seconds()
+            )
+        else:
+            move_remaining = float(move_limit)
+    except (ValueError, TypeError):
+        match_remaining = float(match_limit)
+        move_remaining = float(move_limit)
+
+    our_avg = average_move_sec(app_state, app_state["our_color"])
+    their_color = "black" if app_state["our_color"] == "white" else "white"
+    their_avg = average_move_sec(app_state, their_color)
+
+    lines = [
+        f"Счёт (оценка): мы {score['ours']}, соперник {score['theirs']}.",
+        f"Осталось времени на матч: {_format_sec(match_remaining)}, "
+        f"на текущий ход: {_format_sec(move_remaining)} из {_format_sec(move_limit)}.",
+    ]
+    if our_avg is not None:
+        lines.append(f"Среднее время нашего хода до сих пор: {_format_sec(our_avg)}.")
+    if their_avg is not None:
+        lines.append(f"Среднее время хода соперника до сих пор: {_format_sec(their_avg)}.")
+    return " ".join(lines)
+
+
+def _build_strong_model_messages(
+    fen: str, our_color: str, feedback: str | None, context: str = ""
+) -> list[dict]:
     system = STRONG_MODEL_SYSTEM_PROMPT.format(color="белых" if our_color == "white" else "чёрных")
     user = f"Позиция (FEN): {fen}."
+    if context:
+        user += f" {context}"
     if feedback:
         user += f" {feedback}"
     return [
@@ -124,7 +201,9 @@ def _build_strong_model_messages(fen: str, our_color: str, feedback: str | None)
     ]
 
 
-def call_strong_model(fen: str, our_color: str, feedback: str | None = None) -> dict:
+def call_strong_model(
+    fen: str, our_color: str, feedback: str | None = None, context: str = ""
+) -> dict:
     """Asks the strong model for a move. Returns
     {"ok": True, "from": ..., "to": ..., "reasoning": ...} or
     {"ok": False, "error": ...} - same shape convention as gateway_client/
@@ -135,7 +214,7 @@ def call_strong_model(fen: str, our_color: str, feedback: str | None = None) -> 
 
     payload = {
         "model": STRONG_MODEL_NAME,
-        "messages": _build_strong_model_messages(fen, our_color, feedback),
+        "messages": _build_strong_model_messages(fen, our_color, feedback, context),
         "temperature": 0.2,
     }
     try:
@@ -336,6 +415,10 @@ def execute_move(app_state: dict, from_sq: str, to_sq: str) -> dict:
 
     app_state["board"] = new_board
     app_state["side_to_move"] = "black" if new_board[to_sq]["color"] == "white" else "white"
+    # Must run before sync_active_color below - it reads move_started_at as
+    # it stood during this move (sync_active_color resets it for the next
+    # one). See scoring.record_real_move's docstring.
+    record_real_move(app_state, new_board[to_sq]["color"], new_board)
     app_state["match_clock"] = sync_active_color(app_state["match_clock"], app_state["side_to_move"])
     app_state["last_move"] = {
         "from": from_sq,
@@ -345,6 +428,7 @@ def execute_move(app_state: dict, from_sq: str, to_sq: str) -> dict:
     }
     if result.get("captured_piece"):
         app_state.setdefault("captured_pieces", []).append(result["captured_piece"])
+    app_state["score"] = total_score(app_state)
 
     if result["moved_robot_id"]:
         robot_id = result["moved_robot_id"]
@@ -449,6 +533,9 @@ async def propose_and_execute_move(
     feedback: str | None = None
     regenerations = 0
     accepted_proposal: dict | None = None
+    # Built once per round (retries happen within seconds, not worth
+    # recomputing per attempt) - see _build_time_score_context's docstring.
+    context = _build_time_score_context(app_state)
 
     while True:
         proposal = None
@@ -460,8 +547,9 @@ async def propose_and_execute_move(
             # freeze the entire asyncio event loop. Without this, Stockfish's
             # continuous analysis background task and every other request to
             # this backend would stall for the whole duration of the round.
+            fen = board_to_fen(app_state["board"], side_to_move, app_state.get("fullmove_number", 1))
             candidate = await asyncio.to_thread(
-                call_strong_model, board_to_fen(app_state["board"], side_to_move), our_color, feedback
+                call_strong_model, fen, our_color, feedback, context
             )
             if not candidate.get("ok"):
                 # A network blip/timeout talking to the model is exactly the
@@ -515,7 +603,7 @@ async def propose_and_execute_move(
         vote_result = await asyncio.to_thread(
             _collect_votes,
             quorum,
-            board_to_fen(app_state["board"], side_to_move),
+            board_to_fen(app_state["board"], side_to_move, app_state.get("fullmove_number", 1)),
             proposal["piece"],
             proposal["from"],
             proposal["to"],

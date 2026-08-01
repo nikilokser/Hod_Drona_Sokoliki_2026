@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from state import apply_move, delete_piece, initial_board, rebind_role
+from state import apply_move, delete_piece, initial_board, rebind_role, semifinal_initial_board
 
 BINDINGS = {
     "king": "drone-01",
@@ -212,3 +212,50 @@ def test_delete_piece_rejects_unknown_mode():
     board = initial_board("white", BINDINGS)
     new_board, result = delete_piece(board, "bogus", "e2", our_color="white")
     assert result["ok"] is False
+
+
+# --- semifinal_initial_board -----------------------------------------------
+
+
+def test_semifinal_board_has_22_pieces():
+    # 2 * (1 king, 1 queen, 2 bishops, 2 knights, 1 rook, 4 pawns) = 22
+    board = semifinal_initial_board("white", BINDINGS)
+    assert len(board) == 22
+
+
+def test_semifinal_board_white_keeps_a_file_rook_only():
+    board = semifinal_initial_board("white", BINDINGS)
+    assert board["a1"] == {"color": "white", "piece": "rook", "robot_id": "rover-01", "role": "rook_1"}
+    assert "h1" not in board
+
+
+def test_semifinal_board_black_keeps_h_file_rook_only():
+    board = semifinal_initial_board("white", BINDINGS)
+    assert board["h8"] == {"color": "black", "piece": "rook"}
+    assert "a8" not in board
+
+
+def test_semifinal_board_pawns_only_on_c_to_f_files():
+    board = semifinal_initial_board("white", BINDINGS)
+    our_pawns = {sq for sq, p in board.items() if p["color"] == "white" and p["piece"] == "pawn"}
+    their_pawns = {sq for sq, p in board.items() if p["color"] == "black" and p["piece"] == "pawn"}
+    assert our_pawns == {"c2", "d2", "e2", "f2"}
+    assert their_pawns == {"c7", "d7", "e7", "f7"}
+
+
+def test_semifinal_board_our_side_has_robot_ids():
+    board = semifinal_initial_board("white", BINDINGS)
+    our_squares = [sq for sq, p in board.items() if p["color"] == "white"]
+    assert len(our_squares) == 11
+    for sq in our_squares:
+        assert "robot_id" in board[sq]
+
+
+def test_semifinal_board_rook_assignment_flips_with_our_color():
+    # Rook presence is fixed by absolute color (white=a-file, black=h-file),
+    # not by which side is "ours" - our_color only affects which back rank
+    # (1 or 8) each color's pieces land on and who gets robot_id/role.
+    board = semifinal_initial_board("black", BINDINGS)
+    assert board["a1"]["piece"] == "rook" and board["a1"]["color"] == "white"
+    assert "robot_id" not in board["a1"]
+    assert board["h8"] == {"color": "black", "piece": "rook", "robot_id": "rover-02", "role": "rook_2"}

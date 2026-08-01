@@ -27,7 +27,15 @@ from match_clock import (  # noqa: E402
     sync_active_color,
 )
 from move_orchestrator import execute_move, propose_and_execute_move  # noqa: E402
-from state import ALL_ROLES, apply_move, delete_piece, initial_board, rebind_role  # noqa: E402
+from scoring import record_real_move, total_score  # noqa: E402
+from state import (  # noqa: E402
+    ALL_ROLES,
+    apply_move,
+    delete_piece,
+    initial_board,
+    rebind_role,
+    semifinal_initial_board,
+)
 from stockfish_client import run_continuous_analysis, start_engine, stop_engine  # noqa: E402
 from ws_manager import ConnectionManager  # noqa: E402
 
@@ -51,8 +59,32 @@ app = FastAPI(lifespan=lifespan)
 manager = ConnectionManager()
 
 _initial_bindings = load_bindings()
+# "semifinal" (reduced setup, see state.semifinal_initial_board) or "full"
+# (state.initial_board) - which one /api/reset and /api/our-color rebuild
+# the board with. Semifinals: one rook/side, 4 pawns/side (see the
+# organizers' 2026-08-01 photo). Finals: the full 16+16 board.
+BOARD_VARIANTS = {"semifinal": semifinal_initial_board, "full": initial_board}
+
+
+def _fresh_score_state() -> dict:
+    """Counters scoring.py maintains that must reset alongside the board:
+    fullmove_number/check_bonus/move_time_stats/score (see /api/reset and
+    /api/board-variant)."""
+
+    return {
+        "fullmove_number": 1,
+        "check_bonus": {"white": 0, "black": 0},
+        "move_time_stats": {
+            "white": {"count": 0, "total_sec": 0.0, "score": 0},
+            "black": {"count": 0, "total_sec": 0.0, "score": 0},
+        },
+        "score": {"ours": 0, "theirs": 0},
+    }
+
+
 app_state: dict = {
-    "board": initial_board("white", _initial_bindings),
+    "board": semifinal_initial_board("white", _initial_bindings),
+    "board_variant": "semifinal",
     "mode": "view",
     "our_color": "white",
     "bindings": _initial_bindings,
@@ -75,6 +107,7 @@ app_state: dict = {
     "move_limit_sec": 5 * 60,
     "match_limit_sec": 2 * 60 * 60,
     "excluded_roles": load_excluded_roles(),
+    **_fresh_score_state(),
 }
 
 
@@ -118,16 +151,34 @@ async def set_mode(payload: ModeRequest) -> dict:
 @app.post("/api/our-color")
 async def set_our_color(payload: ColorRequest) -> dict:
     app_state["our_color"] = payload.color
-    app_state["board"] = initial_board(payload.color, app_state["bindings"])
+    app_state["board"] = BOARD_VARIANTS[app_state["board_variant"]](payload.color, app_state["bindings"])
+    await manager.broadcast(app_state)
+    return app_state
+
+
+class BoardVariantRequest(BaseModel):
+    variant: Literal["semifinal", "full"]
+
+
+@app.post("/api/board-variant")
+async def set_board_variant(payload: BoardVariantRequest) -> dict:
+    app_state["board_variant"] = payload.variant
+    app_state["board"] = BOARD_VARIANTS[payload.variant](app_state["our_color"], app_state["bindings"])
+    app_state["last_move"] = None
+    app_state["captured_pieces"] = []
+    app_state.update(_fresh_score_state())
     await manager.broadcast(app_state)
     return app_state
 
 
 @app.post("/api/reset")
 async def reset_board() -> dict:
-    app_state["board"] = initial_board(app_state["our_color"], app_state["bindings"])
+    app_state["board"] = BOARD_VARIANTS[app_state["board_variant"]](
+        app_state["our_color"], app_state["bindings"]
+    )
     app_state["last_move"] = None
     app_state["captured_pieces"] = []
+    app_state.update(_fresh_score_state())
     await manager.broadcast(app_state)
     return app_state
 
@@ -217,12 +268,16 @@ async def move(body: dict) -> dict:
             if app_state["mode"] == "view":
                 # "correct" is a pure board-state fix (drag either side
                 # freely, no legality/turn check) - not a real move, so it
-                # must not silently advance the judge-controlled clock.
-                # "view" (recording the opponent's actual move) and
-                # "manual" (handled inside execute_move above) both do.
+                # must not silently advance the judge-controlled clock or
+                # count towards score/move-number tracking. "view"
+                # (recording the opponent's actual move) and "manual"
+                # (handled inside execute_move above) both do - must run
+                # before sync_active_color, see record_real_move's docstring.
+                record_real_move(app_state, new_board[payload.to_square]["color"], new_board)
                 app_state["match_clock"] = sync_active_color(
                     app_state["match_clock"], app_state["side_to_move"]
                 )
+            app_state["score"] = total_score(app_state)
 
     if not result["ok"]:
         raise HTTPException(status_code=400, detail=result["error"])
@@ -288,6 +343,7 @@ async def clear_chat() -> dict:
 @app.post("/api/match/start")
 async def start_match_clock() -> dict:
     app_state["match_clock"] = start_match()
+    app_state.update(_fresh_score_state())
     await manager.broadcast(app_state)
     return app_state
 

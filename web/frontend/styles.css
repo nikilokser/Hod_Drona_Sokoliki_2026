@@ -352,6 +352,13 @@ input[type="checkbox"] {
   color: var(--text-muted);
 }
 
+.score-display {
+  font-size: 1.4rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+
 .captured-sidebar-icons {
   display: flex;
   flex-wrap: wrap;

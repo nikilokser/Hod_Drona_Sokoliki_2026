@@ -48,7 +48,7 @@ async def _noop_broadcast(state):
 def _sequence_strong_model(*results):
     it = iter(results)
 
-    def _call(fen, color, feedback=None):
+    def _call(fen, color, feedback=None, context=""):
         return next(it)
 
     return _call
@@ -344,6 +344,24 @@ def test_execute_move_does_not_record_capture_on_non_capturing_move():
     assert app_state.get("captured_pieces", []) == []
 
 
+def test_execute_move_increments_fullmove_number_only_after_black():
+    app_state = make_app_state(fullmove_number=1)
+    with patch("move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}):
+        move_orchestrator.execute_move(app_state, "g1", "f3")  # white
+    assert app_state["fullmove_number"] == 1
+    with patch("move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}):
+        move_orchestrator.execute_move(app_state, "g8", "f6")  # black
+    assert app_state["fullmove_number"] == 2
+
+
+def test_execute_move_updates_score_after_capture():
+    app_state = make_app_state()
+    app_state["board"]["f3"] = {"color": "black", "piece": "pawn"}
+    with patch("move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}):
+        move_orchestrator.execute_move(app_state, "g1", "f3")
+    assert app_state["score"] == {"ours": 10, "theirs": 0}
+
+
 # --- propose_and_execute_move (full round) --------------------------------------------------------
 
 
@@ -362,7 +380,7 @@ async def test_propose_and_execute_move_allowed_in_view_mode(monkeypatch):
     monkeypatch.setattr(
         move_orchestrator,
         "call_strong_model",
-        lambda fen, color, feedback=None: {
+        lambda fen, color, feedback=None, context="": {
             "ok": True, "from": "b1", "to": "c3", "reasoning": "test"
         },
     )
@@ -388,7 +406,7 @@ async def test_propose_and_execute_move_rejects_excluded_role_proposal(monkeypat
     monkeypatch.setattr(
         move_orchestrator,
         "call_strong_model",
-        lambda fen, color, feedback=None: {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
+        lambda fen, color, feedback=None, context="": {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
     )
 
     with patch("move_orchestrator.send_fly_command") as mock_send:
@@ -409,7 +427,7 @@ async def test_propose_and_execute_move_model_error_retries_then_fails(monkeypat
     # actually trying a few times.
     call_count = {"n": 0}
 
-    def fake_call(fen, color, feedback=None):
+    def fake_call(fen, color, feedback=None, context=""):
         call_count["n"] += 1
         return {"ok": False, "error": "модель недоступна"}
 
@@ -433,7 +451,7 @@ async def test_propose_and_execute_move_recovers_after_transient_model_error(mon
         {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
     ]
 
-    def fake_call(fen, color, feedback=None):
+    def fake_call(fen, color, feedback=None, context=""):
         return responses.pop(0)
 
     app_state = make_app_state()
@@ -454,7 +472,7 @@ async def test_propose_and_execute_move_accepted_no_quorum(monkeypatch):
     monkeypatch.setattr(
         move_orchestrator,
         "call_strong_model",
-        lambda fen, color, feedback=None: {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
+        lambda fen, color, feedback=None, context="": {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
     )
     monkeypatch.setattr(move_orchestrator, "compute_quorum", lambda app_state: [])
 
@@ -472,7 +490,7 @@ async def test_propose_and_execute_move_accepted_all_yes(monkeypatch):
     monkeypatch.setattr(
         move_orchestrator,
         "call_strong_model",
-        lambda fen, color, feedback=None: {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
+        lambda fen, color, feedback=None, context="": {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
     )
     monkeypatch.setattr(move_orchestrator, "compute_quorum", lambda app_state: ["drone-06"])
     monkeypatch.setattr(
@@ -538,7 +556,7 @@ async def test_propose_and_execute_move_pawn_proposal_accepted(monkeypatch):
     monkeypatch.setattr(
         move_orchestrator,
         "call_strong_model",
-        lambda fen, color, feedback=None: {
+        lambda fen, color, feedback=None, context="": {
             "ok": True, "from": "e2", "to": "e4", "reasoning": "пешка вперёд"
         },
     )
@@ -599,7 +617,7 @@ async def test_propose_and_execute_move_escalated_alternative_feeds_back_to_mode
     app_state = make_app_state()
     calls = []
 
-    def fake_call_strong_model(fen, color, feedback=None):
+    def fake_call_strong_model(fen, color, feedback=None, context=""):
         calls.append(feedback)
         if len(calls) == 1:
             return {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие коня"}
@@ -638,7 +656,7 @@ async def test_propose_and_execute_move_forced_after_regeneration_limit(monkeypa
     monkeypatch.setattr(
         move_orchestrator,
         "call_strong_model",
-        lambda fen, color, feedback=None: {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
+        lambda fen, color, feedback=None, context="": {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
     )
     monkeypatch.setattr(move_orchestrator, "compute_quorum", lambda app_state: ["drone-06"])
     monkeypatch.setattr(
@@ -805,7 +823,7 @@ async def test_propose_and_execute_move_does_not_block_event_loop(monkeypatch):
     monkeypatch.setattr(
         move_orchestrator,
         "call_strong_model",
-        lambda fen, color, feedback=None: (
+        lambda fen, color, feedback=None, context="": (
             time.sleep(0.3),
             {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
         )[1],

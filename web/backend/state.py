@@ -100,6 +100,60 @@ def initial_board(our_color: str, bindings: dict[str, str]) -> dict:
     return board
 
 
+# Reduced semifinal starting position (per the organizers' 2026-08-01 photo
+# of the physical setup): one rook per side instead of two - white keeps
+# the a-file rook (rook_1), black keeps the h-file rook (rook_2) - and only
+# four pawns per side, c/d/e/f files (pawn_3..pawn_6 in our a-to-h
+# numbering). Everything else matches the standard back rank. The final
+# uses the full board (initial_board).
+SEMIFINAL_ROOK_ROLE = {"white": "rook_1", "black": "rook_2"}
+SEMIFINAL_PAWN_FILES = {3, 4, 5, 6}
+
+
+def semifinal_initial_board(our_color: str, bindings: dict[str, str]) -> dict:
+    board: dict[str, dict] = {}
+    their_color = _opposite(our_color)
+    our_back_rank = 1 if our_color == "white" else 8
+    our_pawn_rank = 2 if our_color == "white" else 7
+    their_back_rank = 8 if our_color == "white" else 1
+    their_pawn_rank = 7 if our_color == "white" else 2
+
+    def _rook_present(role: str, color: str) -> bool:
+        return role not in ("rook_1", "rook_2") or role == SEMIFINAL_ROOK_ROLE[color]
+
+    for file_index, role in BACK_RANK:
+        piece = ROLE_TO_PIECE[role]
+        if _rook_present(role, our_color):
+            board[_square(file_index, our_back_rank)] = {
+                "color": our_color,
+                "piece": piece,
+                "robot_id": bindings[role],
+                "role": role,
+            }
+        if _rook_present(role, their_color):
+            board[_square(file_index, their_back_rank)] = {
+                "color": their_color,
+                "piece": piece,
+            }
+
+    for file_index in range(8):
+        if (file_index + 1) not in SEMIFINAL_PAWN_FILES:
+            continue
+        pawn_role = f"pawn_{file_index + 1}"
+        board[_square(file_index, our_pawn_rank)] = {
+            "color": our_color,
+            "piece": "pawn",
+            "robot_id": bindings[pawn_role],
+            "role": pawn_role,
+        }
+        board[_square(file_index, their_pawn_rank)] = {
+            "color": their_color,
+            "piece": "pawn",
+        }
+
+    return board
+
+
 def rebind_role(board: dict, role: str, robot_id: str) -> dict:
     """Update the robot_id of whichever square currently holds the piece
     with this role. If that piece was captured and is no longer on the
