@@ -261,6 +261,12 @@ async def move(body: dict) -> dict:
         )
         if result["ok"]:
             app_state["board"] = new_board
+            # side_to_move tracks whose turn it is on the physical board and
+            # stays in sync for ANY mode's move, including "correct"
+            # (test_move_auto_updates_side_to_move relies on this) - a
+            # separate concern from the real-move/scoring tracking below,
+            # which only "view" and "manual" (handled inside execute_move
+            # above) count towards.
             app_state["side_to_move"] = (
                 "black" if new_board[payload.to_square]["color"] == "white" else "white"
             )
