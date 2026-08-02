@@ -138,38 +138,22 @@ def to_validator_board(board: dict, side_to_move: str) -> dict:
 
 
 def _is_legal_move(
-    board: dict,
-    side_to_move: str,
-    from_sq: str,
-    to_sq: str,
-    excluded_roles: list[str] = (),
-    online_robot_ids: set[str] | None = None,
+    board: dict, side_to_move: str, from_sq: str, to_sq: str, excluded_roles: list[str] = ()
 ) -> tuple[bool, str | None]:
+    # Deliberately does NOT check whether the piece's bound robot is
+    # online (tried this 2026-08-02, reverted same day per user request):
+    # the Gateway's online flag isn't a reliable signal during testing -
+    # it can say offline when the real problem is transient network
+    # flakiness, not the robot itself, and the whole point of testing is
+    # to actually exercise the dispatch path rather than have proposals
+    # silently skipped over it. If a robot genuinely can't be reached,
+    # let the dispatch itself fail visibly instead of guessing upfront.
     occupant = board.get(from_sq)
     if occupant is None:
         return False, f"На клетке {from_sq} нет фигуры"
 
     if occupant.get("role") in excluded_roles:
         return False, f"Фигура «{occupant['role']}» исключена из ходов оператором"
-
-    # online_robot_ids is None for callers that don't have fresh Gateway
-    # data (fail-open - a stale/unreachable Gateway must not block every
-    # move) - only checked when actually provided. Observed live
-    # 2026-08-02: a pawn bound to an offline robot (peshka-16) kept getting
-    # proposed and "succeeding" as far as the board/orchestrator were
-    # concerned (apply_move doesn't know or care whether the robot is
-    # reachable), while every real dispatch attempt silently failed
-    # ("Robot peshka-16 is offline") - flooding the negotiation feed with
-    # repeated "вперёд на две клетки" and leaving the software board
-    # diverged from the real one. Treating an offline-bound piece as not
-    # a legal proposal routes it through the same retry/feedback loop as
-    # any other illegal move instead.
-    if (
-        online_robot_ids is not None
-        and occupant.get("robot_id")
-        and occupant["robot_id"] not in online_robot_ids
-    ):
-        return False, f"Робот «{occupant['robot_id']}» сейчас не в сети"
 
     result = validate_move(
         to_validator_board(board, side_to_move),
@@ -180,16 +164,10 @@ def _is_legal_move(
     return True, None
 
 
-def _legal_moves_list(
-    board: dict,
-    side_to_move: str,
-    excluded_roles: list[str],
-    online_robot_ids: set[str] | None = None,
-) -> list[str]:
+def _legal_moves_list(board: dict, side_to_move: str, excluded_roles: list[str]) -> list[str]:
     """All currently legal "from-to" moves for side_to_move, excluding
-    operator-excluded pieces and pieces bound to an offline robot (see
-    _is_legal_move) - the ground-truth fallback handed to the model after
-    it's repeatedly failed to find one itself (see
+    operator-excluded pieces - the ground-truth fallback handed to the
+    model after it's repeatedly failed to find one itself (see
     propose_and_execute_move). Brute-forces every square for every one of
     the side's pieces (move_validator._all_legal_moves), same as
     move_validator.is_checkmate does - cheap at this board size (at most
@@ -200,13 +178,6 @@ def _legal_moves_list(
     for move in _all_legal_moves(validator_state, side_to_move):
         occupant = board.get(move["from"])
         if occupant and occupant.get("role") in excluded_roles:
-            continue
-        if (
-            occupant
-            and online_robot_ids is not None
-            and occupant.get("robot_id")
-            and occupant["robot_id"] not in online_robot_ids
-        ):
             continue
         moves.append(f"{move['from']}-{move['to']}")
     return moves
@@ -460,20 +431,6 @@ def compute_quorum(app_state: dict) -> list[str]:
     return sorted(online_non_pawn & on_board_robot_ids)
 
 
-def _online_robot_ids() -> set[str] | None:
-    """All robot_ids the Gateway currently reports online (any type,
-    unlike compute_quorum which excludes pawns) - used to reject an AI
-    proposal for a piece whose robot isn't there to carry it out (see
-    _is_legal_move). Returns None (meaning "unknown, don't filter") if the
-    Gateway itself is unreachable - fail-open, a flaky Gateway must not
-    block every move."""
-
-    robots_result = get_robots()
-    if not robots_result.get("ok"):
-        return None
-    return {robot["robot_id"] for robot in robots_result["robots"] if robot.get("online")}
-
-
 def _collect_votes(
     quorum: list[str], fen: str, piece: str, from_sq: str, to_sq: str, reasoning: str
 ) -> dict:
@@ -721,10 +678,6 @@ async def propose_and_execute_move(
             "линию атаки своей фигурой, или возьми фигуру, объявившую шах. "
             "Любой другой ход будет отклонён как невозможный."
         )
-    # Also built once per round - see _is_legal_move's docstring for why an
-    # offline-bound piece is rejected like any other illegal move.
-    online_robot_ids = await asyncio.to_thread(_online_robot_ids)
-
     while True:
         proposal = None
         last_model_error: str | None = None
@@ -773,7 +726,6 @@ async def propose_and_execute_move(
                 candidate["from"],
                 candidate["to"],
                 app_state.get("excluded_roles", []),
-                online_robot_ids,
             )
             if legal:
                 proposal = {**candidate, "piece": app_state["board"][candidate["from"]]["piece"]}
@@ -820,7 +772,7 @@ async def propose_and_execute_move(
             # can't keep getting this wrong if the answer is copy-paste.
             if illegal_attempt_count >= 3:
                 legal_moves = _legal_moves_list(
-                    app_state["board"], side_to_move, app_state.get("excluded_roles", []), online_robot_ids
+                    app_state["board"], side_to_move, app_state.get("excluded_roles", [])
                 )
                 if legal_moves:
                     feedback += (

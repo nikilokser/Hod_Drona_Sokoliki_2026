@@ -54,23 +54,6 @@ def _sequence_strong_model(*results):
     return _call
 
 
-@pytest.fixture(autouse=True)
-def _no_real_gateway_calls(monkeypatch):
-    # propose_and_execute_move calls _online_robot_ids() (-> get_robots())
-    # once per round now, before anything else - without this, every test
-    # in this file would make a REAL httpx call to whatever Gateway happens
-    # to be reachable at GATEWAY_BASE_URL (there often is one, since this
-    # suite runs on the same machine as the live deployment). Default here
-    # matches "Gateway unreachable" -> _online_robot_ids() returns None ->
-    # the online-robot check is skipped entirely, preserving every existing
-    # test's behavior from before that check existed. Tests that want to
-    # exercise the offline-robot rejection path override this locally with
-    # their own patch("move_orchestrator.get_robots", ...).
-    monkeypatch.setattr(
-        move_orchestrator, "get_robots", lambda: {"ok": False, "error": "no gateway in tests"}
-    )
-
-
 # --- to_validator_board -----------------------------------------------------
 
 
@@ -78,40 +61,6 @@ def test_to_validator_board_converts_shape():
     board = {"e2": {"color": "white", "piece": "pawn", "robot_id": "peshka-05", "role": "pawn_5"}}
     result = move_orchestrator.to_validator_board(board, "white")
     assert result == {"board": {"e2": ("white", "pawn")}, "side_to_move": "white"}
-
-
-# --- _is_legal_move / _legal_moves_list: offline-robot rejection -----------
-
-
-def test_is_legal_move_rejects_offline_bound_piece():
-    board = initial_board("white", BINDINGS)
-    legal, reason = move_orchestrator._is_legal_move(
-        board, "white", "g1", "f3", online_robot_ids={"drone-01"}  # knight_2's robot missing
-    )
-    assert legal is False
-    assert "не в сети" in reason
-
-
-def test_is_legal_move_allows_online_bound_piece():
-    board = initial_board("white", BINDINGS)
-    legal, _ = move_orchestrator._is_legal_move(
-        board, "white", "g1", "f3", online_robot_ids={"drone-06"}  # g1 is knight_2 -> drone-06
-    )
-    assert legal is True
-
-
-def test_is_legal_move_skips_online_check_when_none():
-    # None means "Gateway unreachable, don't know" - fail-open, must not
-    # block every move just because the Gateway happened to be flaky.
-    board = initial_board("white", BINDINGS)
-    legal, _ = move_orchestrator._is_legal_move(board, "white", "g1", "f3", online_robot_ids=None)
-    assert legal is True
-
-
-def test_legal_moves_list_excludes_offline_bound_pieces():
-    board = initial_board("white", BINDINGS)
-    moves = move_orchestrator._legal_moves_list(board, "white", [], online_robot_ids=set())
-    assert moves == []
 
 
 # --- parse_vote --------------------------------------------------------------
@@ -637,34 +586,6 @@ async def test_propose_and_execute_move_nudges_away_from_stuck_piece(monkeypatch
     assert seen_feedback[0] is None
     assert "ДРУГУЮ фигуру" not in (seen_feedback[1] or "")
     assert all("ДРУГУЮ фигуру" in (fb or "") for fb in seen_feedback[2:])
-
-
-@pytest.mark.asyncio
-async def test_propose_and_execute_move_rejects_offline_bound_piece(monkeypatch):
-    # Live-observed 2026-08-02: a pawn bound to peshka-16 (offline) kept
-    # getting proposed and "succeeding" board-wise while every real
-    # dispatch attempt failed ("Robot peshka-16 is offline"), flooding the
-    # negotiation feed with repeated "вперёд на две клетки". The proposal
-    # must be rejected before ever reaching execute_move/dispatch.
-    fake_robots = {"ok": True, "robots": [{"robot_id": "drone-99", "online": True}]}
-    monkeypatch.setattr(move_orchestrator, "get_robots", lambda: fake_robots)
-    monkeypatch.setattr(
-        move_orchestrator,
-        "call_strong_model",
-        lambda fen, color, feedback=None, context="", temperature=0.2: {
-            "ok": True, "from": "g1", "to": "f3", "reasoning": "test"
-        },
-    )
-
-    app_state = make_app_state()  # g1/knight_2 is bound to drone-06, not online
-    with patch("move_orchestrator.send_fly_command") as mock_send:
-        result = await move_orchestrator.propose_and_execute_move(app_state, _noop_broadcast)
-
-    assert result["ok"] is False
-    assert result["attempts"][-1]["outcome"] == "local_validation_exhausted"
-    mock_send.assert_not_called()
-    illegal_attempts = [a for a in result["attempts"] if a.get("outcome") == "illegal"]
-    assert illegal_attempts and "не в сети" in illegal_attempts[0]["reason"]
 
 
 @pytest.mark.asyncio
