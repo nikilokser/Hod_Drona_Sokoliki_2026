@@ -654,6 +654,9 @@ async def propose_and_execute_move(
     while True:
         proposal = None
         last_model_error: str | None = None
+        # Tracks how many times each source square has come back illegal
+        # within this round - see the stuck-on-one-piece nudge below.
+        illegal_from_counts: dict[str, int] = {}
         for attempt_index in range(MAX_LOCAL_RETRIES):
             # call_strong_model/compute_quorum/_collect_votes/execute_move are
             # all plain blocking calls (sync httpx) - run in a worker thread
@@ -711,6 +714,23 @@ async def propose_and_execute_move(
                 f"Предыдущее предложение {candidate.get('from')}-{candidate.get('to')} "
                 f"отклонено локальной проверкой: {reason}. Предложи другой ход."
             )
+            # Observed live 2026-08-02: temperature escalation alone isn't
+            # enough when the model is fixated on ONE piece specifically
+            # (e.g. a bishop whose whole diagonal is blocked by its own
+            # pawn) - it kept varying the target square (b5, c4, a6, d3...)
+            # while never reconsidering that the piece itself can't move at
+            # all right now. After 2 illegal attempts from the same square,
+            # say so explicitly instead of waiting for it to figure that out.
+            from_sq = candidate.get("from")
+            if from_sq:
+                illegal_from_counts[from_sq] = illegal_from_counts.get(from_sq, 0) + 1
+                if illegal_from_counts[from_sq] >= 2:
+                    feedback += (
+                        f" Ты уже несколько раз безуспешно пытался ходить именно "
+                        f"фигурой с клетки {from_sq} - сейчас эта фигура, похоже, "
+                        f"не может никуда сходить. Выбери ДРУГУЮ фигуру, стоящую "
+                        f"на другой клетке."
+                    )
 
         if proposal is None:
             attempts.append({"outcome": "local_validation_exhausted"})

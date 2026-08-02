@@ -560,6 +560,35 @@ async def test_propose_and_execute_move_escalates_temperature_on_illegal_retry(m
 
 
 @pytest.mark.asyncio
+async def test_propose_and_execute_move_nudges_away_from_stuck_piece(monkeypatch):
+    # Observed live 2026-08-02: temperature escalation alone wasn't enough
+    # when the model stayed fixated on ONE piece (a bishop whose whole
+    # diagonal was blocked by its own pawn) - it kept varying the TARGET
+    # square while never trying a different piece. After the same source
+    # square fails twice, the feedback must explicitly say so.
+    seen_feedback = []
+
+    def fake_call(fen, color, feedback=None, context="", temperature=0.2):
+        seen_feedback.append(feedback)
+        # Always proposes a move from f1 (excluded, so always illegal) -
+        # simulates the model staying fixated on one piece.
+        return {"ok": True, "from": "f1", "to": "b5", "reasoning": "test"}
+
+    app_state = make_app_state(excluded_roles=["bishop_2"])  # f1 is bishop_2
+    monkeypatch.setattr(move_orchestrator, "call_strong_model", fake_call)
+
+    with patch("move_orchestrator.send_fly_command"):
+        await move_orchestrator.propose_and_execute_move(app_state, _noop_broadcast)
+
+    # First attempt has no feedback yet; the 2nd (after 1 illegal attempt)
+    # gets plain rejection feedback; from the 3rd call onward (after 2
+    # illegal f1 attempts) the "try a different piece" nudge kicks in.
+    assert seen_feedback[0] is None
+    assert "ДРУГУЮ фигуру" not in (seen_feedback[1] or "")
+    assert all("ДРУГУЮ фигуру" in (fb or "") for fb in seen_feedback[2:])
+
+
+@pytest.mark.asyncio
 async def test_propose_and_execute_move_model_error_retries_then_fails(monkeypatch):
     # A network blip talking to the strong model shouldn't abort the whole
     # round on the very first failure - it retries within the same
