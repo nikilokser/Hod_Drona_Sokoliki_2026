@@ -172,3 +172,33 @@ def test_average_move_sec_computes_mean():
         }
     )
     assert scoring.average_move_sec(app_state, "white") == 15.0
+
+
+# --- check_game_end -------------------------------------------------------
+
+
+def test_check_game_end_detects_checkmate():
+    # Classic back-rank mate: black king boxed in by its own pawns, rook
+    # checks along the open 8th rank.
+    board = {
+        "h8": {"color": "black", "piece": "king"},
+        "g7": {"color": "black", "piece": "pawn"},
+        "h7": {"color": "black", "piece": "pawn"},
+        "a8": {"color": "white", "piece": "rook"},
+        "e1": {"color": "white", "piece": "king"},
+    }
+    assert scoring.check_game_end(board, "black") == {"kind": "checkmate", "winner": "white"}
+
+
+def test_check_game_end_detects_stalemate():
+    board = {
+        "h8": {"color": "black", "piece": "king"},
+        "f7": {"color": "white", "piece": "king"},
+        "g6": {"color": "white", "piece": "queen"},
+    }
+    assert scoring.check_game_end(board, "black") == {"kind": "stalemate", "winner": None}
+
+
+def test_check_game_end_none_for_ongoing_game():
+    board = initial_board("white", BINDINGS)
+    assert scoring.check_game_end(board, "black") is None

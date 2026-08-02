@@ -33,12 +33,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from move_validator import validate_move  # noqa: E402 (see sys.path setup above)
+from move_validator import is_in_check, validate_move  # noqa: E402 (see sys.path setup above)
 
 import peshka_client
 from gateway_client import ask_robots, get_robots, send_fly_command
-from match_clock import sync_active_color
-from scoring import average_move_sec, record_real_move, total_score
+from match_clock import end_match, sync_active_color
+from scoring import average_move_sec, check_game_end, record_real_move, total_score
 from state import apply_move
 from stockfish_client import board_to_fen
 
@@ -225,13 +225,60 @@ def _build_strong_model_messages(
     ]
 
 
+_JSON_OBJECT_RE = re.compile(r"\{[^{}]*\}")
+
+
+def _extract_move_json(content: str) -> dict:
+    """Parses the model's JSON move answer, tolerating extra prose around
+    it. Some prompts (notably being told it's in check - see the check
+    warning in propose_and_execute_move) push gemma-4-31b into "thinking
+    out loud" even though it isn't a reasoning model: it can write a
+    tentative JSON object, a paragraph second-guessing itself, and then a
+    corrected JSON object - observed live 2026-08-02, where the corrected
+    one was the actually-right answer. A plain json.loads on the raw
+    content fails on the surrounding text, so this instead finds every
+    flat {...} block and returns the LAST one that parses and has
+    "from"/"to" keys, since that's the model's final answer after any
+    self-correction. Raises json.JSONDecodeError (like a failed
+    json.loads would) if nothing usable is found, so callers don't need a
+    separate error path."""
+
+    result = None
+    for match in _JSON_OBJECT_RE.finditer(content):
+        try:
+            obj = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            continue
+        if "from" in obj and "to" in obj:
+            result = obj
+    if result is None:
+        raise json.JSONDecodeError("no move JSON with from/to found in response", content, 0)
+    return result
+
+
 def call_strong_model(
-    fen: str, our_color: str, feedback: str | None = None, context: str = ""
+    fen: str,
+    our_color: str,
+    feedback: str | None = None,
+    context: str = "",
+    temperature: float = 0.2,
 ) -> dict:
     """Asks the strong model for a move. Returns
     {"ok": True, "from": ..., "to": ..., "reasoning": ...} or
     {"ok": False, "error": ...} - same shape convention as gateway_client/
-    stockfish_client, never raises."""
+    stockfish_client, never raises.
+
+    temperature defaults low for a precise first attempt, but callers
+    retrying after a rejected proposal should raise it (see
+    propose_and_execute_move) - observed live 2026-08-02: at temperature
+    0.2, gemma-4-31b given "your last move X-Y was illegal, propose
+    another" as feedback sometimes just proposes the EXACT SAME illegal
+    move again, repeatedly (confirmed 6/6 identical retries on a real
+    stuck position) - it's non-reasoning and near-deterministic at low
+    temperature, so the same prompt (even with feedback appended) can
+    collapse back onto the same top-probability answer. A higher
+    temperature on retry actually changes the proposal in the same
+    situation (verified live)."""
 
     if not STRONG_MODEL_API_KEY:
         return {"ok": False, "error": "STRONG_MODEL_API_KEY не задан"}
@@ -239,7 +286,7 @@ def call_strong_model(
     payload = {
         "model": STRONG_MODEL_NAME,
         "messages": _build_strong_model_messages(fen, our_color, feedback, context),
-        "temperature": 0.2,
+        "temperature": temperature,
         # deepseek-v4-pro is a reasoning model - observed live 2026-08-02
         # spending anywhere from ~1200 (plain position) to ~1900+ (this
         # project's non-standard board layouts, see the system prompt)
@@ -282,7 +329,7 @@ def call_strong_model(
             # cause instead of leaving it looking like a random parse error.
             finish_reason = choice.get("finish_reason", "?")
             return {"ok": False, "error": f"Модель вернула пустой ответ (finish_reason={finish_reason})"}
-        parsed = json.loads(content)
+        parsed = _extract_move_json(content)
         return {
             "ok": True,
             "from": parsed["from"],
@@ -475,6 +522,12 @@ def execute_move(app_state: dict, from_sq: str, to_sq: str) -> dict:
         app_state.setdefault("captured_pieces", []).append(result["captured_piece"])
     app_state["score"] = total_score(app_state)
 
+    game_result = check_game_end(new_board, app_state["side_to_move"])
+    if game_result:
+        app_state["game_result"] = game_result
+        if app_state["match_clock"]["status"] in ("running", "paused"):
+            app_state["match_clock"] = end_match(app_state["match_clock"])
+
     if result["moved_robot_id"]:
         robot_id = result["moved_robot_id"]
         if new_board[to_sq]["piece"] == "pawn":
@@ -557,6 +610,9 @@ async def propose_and_execute_move(
     if app_state["mode"] not in ("manual", "view"):
         return {"ok": False, "error": "Предложение хода доступно только в режиме «Ручные ходы»"}
 
+    if app_state.get("game_result"):
+        return {"ok": False, "error": "Партия уже завершена (мат/пат)"}
+
     our_color = app_state["our_color"]
     side_to_move = app_state["side_to_move"]
     if side_to_move != our_color:
@@ -581,6 +637,19 @@ async def propose_and_execute_move(
     # Built once per round (retries happen within seconds, not worth
     # recomputing per attempt) - see _build_time_score_context's docstring.
     context = _build_time_score_context(app_state)
+    # Explicit heads-up when we're in check - observed live 2026-08-02: the
+    # model doesn't reliably notice check status from the FEN alone and
+    # keeps proposing moves that ignore it (rejected every time by
+    # _is_legal_move's "оставляет короля под шахом"), burning the whole
+    # retry budget on the same mistake instead of actually addressing the
+    # check. Spelling it out directly cuts that out at the source.
+    if is_in_check(to_validator_board(app_state["board"], side_to_move), side_to_move):
+        context += (
+            " ВНИМАНИЕ: твой король сейчас под шахом! Обязательно выбери ход, "
+            "который снимает шах — уведи короля на свободную клетку, закрой "
+            "линию атаки своей фигурой, или возьми фигуру, объявившую шах. "
+            "Любой другой ход будет отклонён как невозможный."
+        )
 
     while True:
         proposal = None
@@ -593,8 +662,15 @@ async def propose_and_execute_move(
             # continuous analysis background task and every other request to
             # this backend would stall for the whole duration of the round.
             fen = board_to_fen(app_state["board"], side_to_move, app_state.get("fullmove_number", 1))
+            # Escalate temperature on each retry (capped at 1.0) - a rejected
+            # proposal is retried at the SAME low temperature it failed at
+            # otherwise, and a near-deterministic model can just collapse
+            # back onto the identical (still illegal) answer despite the
+            # feedback telling it to pick something else (see
+            # call_strong_model's docstring for the confirmed live repro).
+            temperature = min(0.2 + attempt_index * 0.25, 1.0)
             candidate = await asyncio.to_thread(
-                call_strong_model, fen, our_color, feedback, context
+                call_strong_model, fen, our_color, feedback, context, temperature
             )
             if not candidate.get("ok"):
                 # A network blip/timeout talking to the model is exactly the
@@ -623,6 +699,14 @@ async def propose_and_execute_move(
                 last_model_error = None
                 break
             last_model_error = None
+            # Previously silent (nothing appended to attempts here) - the
+            # only trace of a whole round of illegal proposals was the
+            # generic "local_validation_exhausted" outcome with no detail
+            # on what was actually proposed or why, making this exact
+            # failure mode (see temperature escalation above) undiagnosable
+            # from the round log alone.
+            attempts.append({"proposal": candidate, "outcome": "illegal", "reason": reason})
+            await broadcast(app_state)
             feedback = (
                 f"Предыдущее предложение {candidate.get('from')}-{candidate.get('to')} "
                 f"отклонено локальной проверкой: {reason}. Предложи другой ход."

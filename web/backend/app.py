@@ -27,7 +27,7 @@ from match_clock import (  # noqa: E402
     sync_active_color,
 )
 from move_orchestrator import execute_move, propose_and_execute_move  # noqa: E402
-from scoring import record_real_move, total_score  # noqa: E402
+from scoring import check_game_end, record_real_move, total_score  # noqa: E402
 from state import (  # noqa: E402
     ALL_ROLES,
     apply_move,
@@ -74,8 +74,8 @@ BOARD_VARIANTS = {
 
 def _fresh_score_state() -> dict:
     """Counters scoring.py maintains that must reset alongside the board:
-    fullmove_number/check_bonus/move_time_stats/score (see /api/reset and
-    /api/board-variant)."""
+    fullmove_number/check_bonus/move_time_stats/score/game_result (see
+    /api/reset and /api/board-variant)."""
 
     return {
         "fullmove_number": 1,
@@ -85,6 +85,7 @@ def _fresh_score_state() -> dict:
             "black": {"count": 0, "total_sec": 0.0, "score": 0},
         },
         "score": {"ours": 0, "theirs": 0},
+        "game_result": None,
     }
 
 
@@ -283,6 +284,11 @@ async def move(body: dict) -> dict:
                 app_state["match_clock"] = sync_active_color(
                     app_state["match_clock"], app_state["side_to_move"]
                 )
+                game_result = check_game_end(new_board, app_state["side_to_move"])
+                if game_result:
+                    app_state["game_result"] = game_result
+                    if app_state["match_clock"]["status"] in ("running", "paused"):
+                        app_state["match_clock"] = end_match(app_state["match_clock"])
             app_state["score"] = total_score(app_state)
 
     if not result["ok"]:

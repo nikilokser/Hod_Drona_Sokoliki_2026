@@ -433,6 +433,7 @@ const ORCHESTRATOR_OUTCOME_LABELS = {
   vetoed: "отклонено голосованием",
   escalated_alternative: "предложена альтернатива",
   model_error: "ошибка модели",
+  illegal: "невозможный ход",
   local_validation_exhausted: "модель не смогла предложить легальный ход",
 };
 
@@ -533,7 +534,8 @@ function renderOrchestratorLog(state) {
       const proposalText = proposal && proposal.from ? `${proposal.from} → ${proposal.to}` : "";
       const outcomeText = ORCHESTRATOR_OUTCOME_LABELS[attempt.outcome] || attempt.outcome || "";
       const forcedText = attempt.forced_after_regeneration_limit ? " (без консенсуса)" : "";
-      line.textContent = `${proposalText} — ${outcomeText}${forcedText}`;
+      const reasonText = attempt.outcome === "illegal" && attempt.reason ? `: ${attempt.reason}` : "";
+      line.textContent = `${proposalText} — ${outcomeText}${reasonText}${forcedText}`;
       card.appendChild(line);
 
       // The model's own reasoning for the proposal - shown regardless of
@@ -676,10 +678,25 @@ const CLOCK_STATUS_LABELS = {
   finished: "Матч завершён",
 };
 
+function gameResultText(gameResult, ourColor) {
+  if (!gameResult) return null;
+  if (gameResult.kind === "checkmate") {
+    const winnerLabel = gameResult.winner === ourColor ? "мы победили" : "победил соперник";
+    return `Мат — ${winnerLabel} (${gameResult.winner === "white" ? "белые" : "чёрные"})`;
+  }
+  if (gameResult.kind === "stalemate") {
+    return "Пат — партия окончена, победитель по сумме очков";
+  }
+  return null;
+}
+
 function renderClockPanel(state) {
   const clock = state.match_clock;
+  const resultText = gameResultText(state.game_result, state.our_color);
 
-  if (clock.status === "running") {
+  if (resultText) {
+    clockTurnEl.textContent = resultText;
+  } else if (clock.status === "running") {
     const whoLabel = clock.active_color === state.our_color ? "наш ход" : "ход соперника";
     const colorLabel = clock.active_color === "white" ? "Белые" : "Чёрные";
     clockTurnEl.textContent = `Ход: ${colorLabel} (${whoLabel})`;

@@ -20,7 +20,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from move_validator import is_in_check  # noqa: E402 (see sys.path setup above)
+from move_validator import is_checkmate, is_in_check, is_stalemate  # noqa: E402 (see sys.path setup above)
 
 POINTS_BY_PIECE = {"pawn": 10, "knight": 30, "bishop": 30, "rook": 50, "queen": 90}
 CHECK_BONUS = 50
@@ -107,3 +107,23 @@ def average_move_sec(app_state: dict, color: str) -> float | None:
     if stats["count"] == 0:
         return None
     return stats["total_sec"] / stats["count"]
+
+
+def check_game_end(board: dict, side_to_move: str) -> dict | None:
+    """Per the regulation: checkmate is an immediate win; a stalemate (like
+    the match clock running out) ends the game to be decided by points
+    instead - it is NOT a win/loss on its own. Call after any real move,
+    checking whether the side now to move (side_to_move, i.e. the
+    opponent of whoever just moved) is mated/stalemated. Returns
+    {"kind": "checkmate", "winner": color} or {"kind": "stalemate",
+    "winner": None}, or None if the game continues."""
+
+    validator_state = {
+        "board": {sq: (occ["color"], occ["piece"]) for sq, occ in board.items()},
+        "side_to_move": side_to_move,
+    }
+    if is_checkmate(validator_state):
+        return {"kind": "checkmate", "winner": _opposite(side_to_move)}
+    if is_stalemate(validator_state):
+        return {"kind": "stalemate", "winner": None}
+    return None

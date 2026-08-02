@@ -48,7 +48,7 @@ async def _noop_broadcast(state):
 def _sequence_strong_model(*results):
     it = iter(results)
 
-    def _call(fen, color, feedback=None, context=""):
+    def _call(fen, color, feedback=None, context="", temperature=0.2):
         return next(it)
 
     return _call
@@ -282,6 +282,52 @@ def test_call_strong_model_bad_json_content(monkeypatch):
     assert result["ok"] is False
 
 
+def test_call_strong_model_tolerates_self_correction_prose(monkeypatch):
+    # Observed live 2026-08-02: told it's in check, gemma-4-31b sometimes
+    # writes a tentative JSON answer, second-guesses itself in prose, then
+    # a corrected JSON answer - the corrected (LAST) one is the real
+    # answer, and must win over the first, wrong one.
+    monkeypatch.setattr(move_orchestrator, "STRONG_MODEL_API_KEY", "test-key")
+    content = (
+        '{"from": "d1", "to": "d1", "reasoning": "хм, кажется шаха нет"}\n\n'
+        "*Поправка: вертикаль 'e' открыта, значит шах ЕСТЬ.*\n\n"
+        '{"from": "e1", "to": "d1", "reasoning": "ухожу с вертикали e"}'
+    )
+    mock_response = MagicMock()
+    mock_response.raise_for_status.return_value = None
+    mock_response.json.return_value = {"choices": [{"message": {"content": content}}]}
+    with patch("move_orchestrator.httpx.post", return_value=mock_response):
+        result = move_orchestrator.call_strong_model("fen", "white")
+    assert result == {"ok": True, "from": "e1", "to": "d1", "reasoning": "ухожу с вертикали e"}
+
+
+# --- _extract_move_json -----------------------------------------------------
+
+
+def test_extract_move_json_plain():
+    assert move_orchestrator._extract_move_json('{"from": "e2", "to": "e4"}') == {
+        "from": "e2",
+        "to": "e4",
+    }
+
+
+def test_extract_move_json_picks_last_valid_object():
+    content = '{"from": "d1", "to": "d1"}\nsome prose\n{"from": "e1", "to": "d1"}'
+    assert move_orchestrator._extract_move_json(content) == {"from": "e1", "to": "d1"}
+
+
+def test_extract_move_json_ignores_objects_without_from_to():
+    content = '{"note": "thinking"}\n{"from": "e1", "to": "d1"}'
+    assert move_orchestrator._extract_move_json(content) == {"from": "e1", "to": "d1"}
+
+
+def test_extract_move_json_raises_when_nothing_usable():
+    import json
+
+    with pytest.raises(json.JSONDecodeError):
+        move_orchestrator._extract_move_json("no json here at all")
+
+
 def test_call_strong_model_empty_content_reports_finish_reason(monkeypatch):
     # Observed live 2026-08-02: a reasoning model can burn its whole token
     # budget on reasoning_content and get cut off before ever writing to
@@ -390,6 +436,34 @@ def test_execute_move_updates_score_after_capture():
     assert app_state["score"] == {"ours": 10, "theirs": 0}
 
 
+def test_execute_move_detects_checkmate_and_ends_match():
+    # White rook delivers back-rank mate on h8; our own piece (bound to a
+    # robot_id) makes the winning move.
+    app_state = make_app_state(
+        board={
+            "h8": {"color": "black", "piece": "king"},
+            "g7": {"color": "black", "piece": "pawn"},
+            "h7": {"color": "black", "piece": "pawn"},
+            "a7": {"color": "white", "piece": "rook", "robot_id": "rover-01", "role": "rook_1"},
+            "e1": {"color": "white", "piece": "king", "robot_id": "drone-01", "role": "king"},
+        },
+        side_to_move="white",
+        match_clock={"status": "running", "active_color": "white", "move_started_at": None},
+    )
+    with patch("move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}):
+        result = move_orchestrator.execute_move(app_state, "a7", "a8")
+    assert result["ok"] is True
+    assert app_state["game_result"] == {"kind": "checkmate", "winner": "white"}
+    assert app_state["match_clock"]["status"] == "finished"
+
+
+def test_execute_move_no_game_result_when_game_continues():
+    app_state = make_app_state()
+    with patch("move_orchestrator.send_fly_command", return_value={"ok": True, "response": {}}):
+        move_orchestrator.execute_move(app_state, "g1", "f3")
+    assert app_state.get("game_result") is None
+
+
 # --- propose_and_execute_move (full round) --------------------------------------------------------
 
 
@@ -408,7 +482,7 @@ async def test_propose_and_execute_move_allowed_in_view_mode(monkeypatch):
     monkeypatch.setattr(
         move_orchestrator,
         "call_strong_model",
-        lambda fen, color, feedback=None, context="": {
+        lambda fen, color, feedback=None, context="", temperature=0.2: {
             "ok": True, "from": "b1", "to": "c3", "reasoning": "test"
         },
     )
@@ -426,6 +500,14 @@ async def test_propose_and_execute_move_rejects_when_not_our_turn():
 
 
 @pytest.mark.asyncio
+async def test_propose_and_execute_move_rejects_when_game_already_over():
+    app_state = make_app_state(game_result={"kind": "checkmate", "winner": "white"})
+    result = await move_orchestrator.propose_and_execute_move(app_state, _noop_broadcast)
+    assert result["ok"] is False
+    assert "заверш" in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_propose_and_execute_move_rejects_excluded_role_proposal(monkeypatch):
     # g1 is knight_2 for white (see state.py's BACK_RANK) - excluding it and
     # having the model keep proposing exactly that move should exhaust the
@@ -434,7 +516,7 @@ async def test_propose_and_execute_move_rejects_excluded_role_proposal(monkeypat
     monkeypatch.setattr(
         move_orchestrator,
         "call_strong_model",
-        lambda fen, color, feedback=None, context="": {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
+        lambda fen, color, feedback=None, context="", temperature=0.2: {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
     )
 
     with patch("move_orchestrator.send_fly_command") as mock_send:
@@ -444,6 +526,37 @@ async def test_propose_and_execute_move_rejects_excluded_role_proposal(monkeypat
     assert result["attempts"][-1]["outcome"] == "local_validation_exhausted"
     mock_send.assert_not_called()
     assert app_state["board"]["g1"]["piece"] == "knight"
+    # Every rejected-but-well-formed proposal is logged individually (not
+    # just the final generic "exhausted" summary) - otherwise there's no
+    # way to see from the round log what the model actually kept proposing.
+    illegal_attempts = [a for a in result["attempts"] if a.get("outcome") == "illegal"]
+    assert len(illegal_attempts) == move_orchestrator.MAX_LOCAL_RETRIES
+    assert illegal_attempts[0]["proposal"]["from"] == "g1"
+    assert "reason" in illegal_attempts[0]
+
+
+@pytest.mark.asyncio
+async def test_propose_and_execute_move_escalates_temperature_on_illegal_retry(monkeypatch):
+    # A rejected proposal is retried at a HIGHER temperature than the last
+    # attempt - observed live 2026-08-02: at the default low temperature,
+    # a near-deterministic model can keep proposing the exact same illegal
+    # move despite feedback telling it to pick something else.
+    seen_temperatures = []
+
+    def fake_call(fen, color, feedback=None, context="", temperature=0.2):
+        seen_temperatures.append(temperature)
+        return {"ok": True, "from": "g1", "to": "f3", "reasoning": "test"}
+
+    app_state = make_app_state(excluded_roles=["knight_2"])
+    monkeypatch.setattr(move_orchestrator, "call_strong_model", fake_call)
+
+    with patch("move_orchestrator.send_fly_command"):
+        await move_orchestrator.propose_and_execute_move(app_state, _noop_broadcast)
+
+    assert len(seen_temperatures) == move_orchestrator.MAX_LOCAL_RETRIES
+    assert seen_temperatures == sorted(seen_temperatures)
+    assert seen_temperatures[0] < seen_temperatures[-1]
+    assert all(t <= 1.0 for t in seen_temperatures)
 
 
 @pytest.mark.asyncio
@@ -455,7 +568,7 @@ async def test_propose_and_execute_move_model_error_retries_then_fails(monkeypat
     # actually trying a few times.
     call_count = {"n": 0}
 
-    def fake_call(fen, color, feedback=None, context=""):
+    def fake_call(fen, color, feedback=None, context="", temperature=0.2):
         call_count["n"] += 1
         return {"ok": False, "error": "модель недоступна"}
 
@@ -479,7 +592,7 @@ async def test_propose_and_execute_move_recovers_after_transient_model_error(mon
         {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
     ]
 
-    def fake_call(fen, color, feedback=None, context=""):
+    def fake_call(fen, color, feedback=None, context="", temperature=0.2):
         return responses.pop(0)
 
     app_state = make_app_state()
@@ -500,7 +613,7 @@ async def test_propose_and_execute_move_accepted_no_quorum(monkeypatch):
     monkeypatch.setattr(
         move_orchestrator,
         "call_strong_model",
-        lambda fen, color, feedback=None, context="": {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
+        lambda fen, color, feedback=None, context="", temperature=0.2: {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
     )
     monkeypatch.setattr(move_orchestrator, "compute_quorum", lambda app_state: [])
 
@@ -518,7 +631,7 @@ async def test_propose_and_execute_move_accepted_all_yes(monkeypatch):
     monkeypatch.setattr(
         move_orchestrator,
         "call_strong_model",
-        lambda fen, color, feedback=None, context="": {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
+        lambda fen, color, feedback=None, context="", temperature=0.2: {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
     )
     monkeypatch.setattr(move_orchestrator, "compute_quorum", lambda app_state: ["drone-06"])
     monkeypatch.setattr(
@@ -584,7 +697,7 @@ async def test_propose_and_execute_move_pawn_proposal_accepted(monkeypatch):
     monkeypatch.setattr(
         move_orchestrator,
         "call_strong_model",
-        lambda fen, color, feedback=None, context="": {
+        lambda fen, color, feedback=None, context="", temperature=0.2: {
             "ok": True, "from": "e2", "to": "e4", "reasoning": "пешка вперёд"
         },
     )
@@ -645,7 +758,7 @@ async def test_propose_and_execute_move_escalated_alternative_feeds_back_to_mode
     app_state = make_app_state()
     calls = []
 
-    def fake_call_strong_model(fen, color, feedback=None, context=""):
+    def fake_call_strong_model(fen, color, feedback=None, context="", temperature=0.2):
         calls.append(feedback)
         if len(calls) == 1:
             return {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие коня"}
@@ -684,7 +797,7 @@ async def test_propose_and_execute_move_forced_after_regeneration_limit(monkeypa
     monkeypatch.setattr(
         move_orchestrator,
         "call_strong_model",
-        lambda fen, color, feedback=None, context="": {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
+        lambda fen, color, feedback=None, context="", temperature=0.2: {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
     )
     monkeypatch.setattr(move_orchestrator, "compute_quorum", lambda app_state: ["drone-06"])
     monkeypatch.setattr(
@@ -851,7 +964,7 @@ async def test_propose_and_execute_move_does_not_block_event_loop(monkeypatch):
     monkeypatch.setattr(
         move_orchestrator,
         "call_strong_model",
-        lambda fen, color, feedback=None, context="": (
+        lambda fen, color, feedback=None, context="", temperature=0.2: (
             time.sleep(0.3),
             {"ok": True, "from": "g1", "to": "f3", "reasoning": "развитие"},
         )[1],
