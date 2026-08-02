@@ -44,28 +44,38 @@ from stockfish_client import board_to_fen
 
 STRONG_MODEL_BASE_URL = os.environ.get("STRONG_MODEL_BASE_URL", "https://ai.sverk.io/v1")
 STRONG_MODEL_API_KEY = os.environ.get("STRONG_MODEL_API_KEY", "")
-STRONG_MODEL_NAME = os.environ.get("STRONG_MODEL_NAME", "deepseek-v4-pro")
+# deepseek-v4-pro (the previous default) is a reasoning model - reliably
+# needed 15-90s+ per call once the score/time/non-standard-layout context
+# was added to the prompt (see MAX_LOCAL_RETRIES/call_strong_model's
+# timeout below), which was the actual cause of "too many model errors"
+# complaints - not network flakiness. gemma-4-31b answers the exact same
+# prompts in 0.15-1.5s, consistently, with equally context-aware reasoning
+# (verified live 2026-08-02 against the same FEN/score/time context) - no
+# reasoning_content overhead to run out of token budget on. Available
+# alternatives on this key (GET /v1/models): "Gemma 4", deepseek-v4-flash
+# (broken - HTTP 500 from the provider both 2026-08-01 and 2026-08-02),
+# gemma4-vlm.
+STRONG_MODEL_NAME = os.environ.get("STRONG_MODEL_NAME", "gemma-4-31b")
 
 MAX_REGENERATIONS = 2
 # Illegal proposals rejected by our own local validator, before ever talking
 # to the drones - cheap, doesn't spend the regeneration budget above. Also
 # reused for model_error retries (a failed HTTP call to the strong model,
-# see propose_and_execute_move).
+# see propose_and_execute_move) - each attempt fails fast (see
+# call_strong_model's timeout) rather than hanging, so more attempts costs
+# little in the typical case and meaningfully improves the odds of getting
+# past a transient blip.
 #
-# Retry count vs per-call timeout is a real tradeoff, not "more retries is
-# always safer" - observed live 2026-08-02: deepseek-v4-pro reliably needs
-# MORE reasoning (measured ~1900 completion tokens / 25s+ vs ~1200/15s on a
-# plain position) on this project's non-standard starting layouts (single
-# rook per side, king/queen swapped for semifinal variant 2), and on a
-# genuinely hard position it can take 60-90s+. A short timeout with many
-# retries just re-fails the SAME slow computation over and over without
-# ever letting one attempt finish - the worst possible strategy for a
-# consistently-slow-but-eventually-successful case, as opposed to a truly
-# transient network blip. Fewer, longer attempts wins here: 60s timeout
-# (see call_strong_model) x 3 attempts = 183s (~3 min) worst case for this
-# inner loop, leaving ~2 min of the 5-minute move limit for the rest of the
-# round (voting, up to MAX_REGENERATIONS more rounds).
-MAX_LOCAL_RETRIES = 3
+# 2026-08-02 history: this was 5 (20s timeout) -> 3 (60s timeout) while
+# STRONG_MODEL_NAME was deepseek-v4-pro, a reasoning model that could
+# legitimately need 60-90s+ per call - "more, shorter retries" was actively
+# counterproductive there, re-failing the same slow computation every time.
+# Switched the default model to gemma-4-31b the same day (0.15-1.5s typical,
+# no reasoning-token overhead - see STRONG_MODEL_NAME above), which flips the
+# tradeoff back: short-timeout-many-retries is now the right shape again.
+# MAX_LOCAL_RETRIES * (15s timeout + 1s backoff) = 96s worst case for this
+# inner loop, well inside the regulation's 5-minute move limit.
+MAX_LOCAL_RETRIES = 6
 # A vote round-trip through a piece agent can involve the agent's own
 # retries against its LLM provider (see patches/sverk_drone_agent/0004 -
 # up to ~3 attempts with backoff, observed taking up to ~35-40s on a slow
@@ -247,18 +257,15 @@ def call_strong_model(
             f"{STRONG_MODEL_BASE_URL}/chat/completions",
             json=payload,
             headers={"Authorization": f"Bearer {STRONG_MODEL_API_KEY}"},
-            # 20s -> 35s -> 60s over 2026-08-02, each bump chasing the same
-            # live observation: deepseek-v4-pro is a reasoning model, and on
-            # this project's non-standard board layouts (see the system
-            # prompt's note about them) a real, successful answer can
-            # legitimately take 25-90s+ - a short timeout doesn't "fail
-            # fast", it just guarantees failure on every attempt for a
-            # position that needed more thinking time, burning the whole
-            # retry budget with nothing to show for it (see
-            # MAX_LOCAL_RETRIES). 60s is sized to that, not to a hung
-            # connection - see MAX_LOCAL_RETRIES for the resulting worst-case
-            # budget math.
-            timeout=60.0,
+            # Was pushed to 60s while STRONG_MODEL_NAME was deepseek-v4-pro
+            # (a reasoning model that could legitimately need 60-90s+ per
+            # call - see MAX_LOCAL_RETRIES's history). Back down to 15s now
+            # that the default is gemma-4-31b (0.15-1.5s typical, no
+            # reasoning-token overhead) - 15s is still a very generous
+            # multiple of that, so this is genuinely "fail fast" again: a
+            # request still running at 15s is a real hang, not gemma
+            # thinking.
+            timeout=15.0,
         )
         response.raise_for_status()
         data = response.json()
